@@ -1,0 +1,75 @@
+Wine run of the published MSYS2 NeoMutt package
+Package: https://mirror.msys2.org/msys/x86_64/neomutt-20260616-3-x86_64.pkg.tar.zst
+Repo: msys (not ucrt64, not mingw64)
+Wine: wine 9.0~repack-4build3 (wine64), prefix owned by the user
+Command: wine neomutt.exe -v
+Working layout: <root>/usr/bin/neomutt.exe next to msys-2.0.dll (runtime 3.6.12-1) and the DLLs named by the PE import table
+Exit code: 0
+
+PE header (x86_64-w64-mingw32-objdump -p / file):
+  format: pei-x86-64
+  file: PE32+ executable (console) x86-64, for MS Windows
+  Subsystem: 00000003 (Windows CUI)
+  ImageBase: 0000000100400000
+
+Direct DLL imports of neomutt.exe:
+  msys-crypto-4.dll
+  msys-gdbm-6.dll
+  msys-gpgme-45.dll
+  msys-gssapi-3.dll
+  msys-iconv-2.dll
+  msys-idn2-0.dll
+  msys-intl-8.dll
+  msys-2.0.dll
+  msys-ncursesw6.dll
+  msys-sasl2-3.dll
+  msys-ssl-4.dll
+  KERNEL32.dll
+
+Package Depends from .PKGINFO:
+  libidn2, libgpgme, libsasl, libgdbm, ncurses, libiconv, libopenssl, libintl, heimdal-libs
+msys-2.0.dll comes from msys2-runtime (the package describes itself as "Posix emulation engine for Windows").
+
+Wine also printed a Cygwin FAST_CWD warning ("Couldn't compute FAST_CWD pointer") and still exited 0.
+A follow-up `wine cygpath.exe -w /usr/bin/neomutt.exe` printed:
+  Z:\tmp\msys-wine\usr\bin\neomutt.exe
+A follow-up `wine neomutt.exe -Q ssl_starttls ssl_force_tls certificate_file folder` printed:
+  set ssl_starttls = yes
+  set ssl_force_tls = yes
+  set certificate_file = "~/.mutt_certificates"
+  set folder = "~/Mail"
+
+stdout of neomutt -v:
+
+NeoMutt 20260616
+Copyright (C) 2015-2026 Richard Russon and friends
+NeoMutt comes with ABSOLUTELY NO WARRANTY; for details type 'neomutt -vv'.
+NeoMutt is free software, and you are welcome to redistribute it
+under certain conditions; type 'neomutt -vv' for details.
+
+System: MSYS_NT-10.0-19043 3.6.12-50c44b7c.x86_64 (x86_64)
+ncurses: ncurses 6.6.20251230 (compiled with 6.6.20251230)
+libiconv: 1.19
+libidn2: 2.3.8 (compiled with 2.3.8)
+GPGME: 2.0.1
+OpenSSL: OpenSSL 4.1.0 23 Oct 2026
+storage: gdbm
+
+Configure options: --prefix=/usr --sysconfdir=/etc --libexecdir=/usr/lib --gpgme --gss --ssl --sasl --with-ui=ncurses --with-idn2=/usr --idn=0 --idn2=1 --gdbm
+
+Compilation CFLAGS: -march=nocona -msahf -mtune=generic -O2 -pipe -Wno-incompatible-pointer-types -std=c11 -fno-delete-null-pointer-checks -D_ALL_SOURCE=1 -D_GNU_SOURCE=1 -D__EXTENSIONS__ -D_XOPEN_SOURCE_EXTENDED -I/usr/include -DNCURSES_WIDECHAR
+
+Compile options:
+  -autocrypt +fcntl -flock -fmemopen +futimens +getaddrinfo -gnutls +gpgme
+  -gsasl +gss +hcache -homespool +idn -inotify -locales_hack -lua +nls -notmuch
+  +openssl +pgp +regex +sasl +smime -sqlite +truecolor
+
+MAILPATH="/var/mail"
+PKGDATADIR="/usr/share/neomutt"
+SENDMAIL="/usr/sbin/sendmail"
+SYSCONFDIR="/etc"
+
+To learn more about NeoMutt, visit: https://neomutt.org
+If you find a bug in NeoMutt, please raise an issue at:
+    https://github.com/neomutt/neomutt/issues
+or send an email to: <neomutt-devel@neomutt.org>
