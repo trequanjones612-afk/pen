@@ -1,0 +1,48 @@
+---
+title: "AI 战略姿态"
+description: "AI 战略姿态面板展示 AIS relay 为每个全球主要战区发布的军事姿态等级，等级依据战区内的军用飞机与受追踪海军舰艇计算，与 API 和 MCP 工具报告的等级一致；支持一键点击战区位置直达地图精确定位，用于宏观军力态势评估与冲突升级早期监控。"
+---
+
+**AI Strategic Posture** 面板（内部 id `strategic-posture`）展示战区级军事姿态评估。它显示 AIS relay 为每个战区发布的等级，与 API 和 MCP 工具报告的等级相同。
+
+## 面板显示内容
+
+一个垂直排列的战区姿态卡片列表。每张卡片包含战区名称、当前姿态摘要和点击穿透交互：选择一个战区会触发可选的位置点击回调，使宿主可以将地图缩放到其坐标。
+
+面板在等待姿态获取解析时使用 `setInterval` 跟踪已用时间，因此在慢速运行时读者能看到可见的进度信号。当种子过期时，面板设置过期指示器（`isStale`），使卡片表面可以标记它。
+
+面板通过 `fetchCachedTheaterPosture()` 加载姿态，并按发布结果渲染，不重新计算等级。当战区目标国家的不稳定指数达到 70 或以上时，卡片会以单独的标签显示该分数；该分数不改变等级。
+
+面板 id 为 `strategic-posture`；规范组件为 `src/components/StrategicPosturePanel.ts`。标题从 i18n 解析（`panels.strategicPosture`）；配置在 `src/config/panels.ts:23` 设置 `'AI Strategic Posture'`。
+
+## 如何访问
+
+- **Cmd+K**：输入 *posture* 或 *strategic*。
+- **按变体的可用性**：仅在 **full/geopolitical** 变体中注册并默认启用。Web 端免费；桌面端变体注册将 `{ premium: 'enhanced' as const }` 展开到配置中，使该面板在桌面构建上变为 enhanced 门控。来源：`src/config/panels.ts:23` 处 `FULL_PANELS` 中的 `'strategic-posture'` 条目（未设置 `premium`；其他位置的桌面变体按 `_desktop &&` 模式叠加 enhanced 门控）。
+
+## 数据来源
+
+- **战区姿态**：AIS relay 发布的各战区等级、飞机数量与受追踪舰艇数量（`theater-posture:sebuf:v1`，规则见 `scripts/shared/theater-posture.js`），通过 `@/services/cached-theater-posture` 读取。
+- **国家不稳定指数**：通过 `@/services/cached-risk-scores` 读取缓存的 CII 分数，仅作参考显示。
+
+## 后端端点
+
+该面板不直接调用每条军事路由。它先读取 bootstrap/缓存姿态数据，然后仅当本地姿态缓存需要新鲜的服务器值时才使用生成的 MilitaryService 客户端。
+
+| 方法 | 路由 | 供给内容 |
+|--------|-------|---------------|
+| `GET` | `/api/military/v1/get-theater-posture` | 卡片列表的主要姿态 RPC。浏览器在回退到此路由之前会检查 bootstrap `theaterPosture`、熔断器缓存和 IndexedDB。 |
+| `GET` | `/api/military/v1/list-military-flights` | 缓存姿态载荷上游、为飞机驱动姿态和激增计算提供数据的源；面板通常消费计算出的姿态输出，而非自行重新获取航班。 |
+
+## 刷新频率
+
+面板不在轮询计时器上 — 在挂载时获取并在相关外部触发时重新渲染。AIS relay 每 10 分钟重新发布一次战区姿态。
+
+## 层级与门控
+
+**Web 端免费；桌面端 enhanced。** 在 full 变体的 `FULL_PANELS` 条目中注册时未设置 `premium`（`src/config/panels.ts:23`），因此 Web 构建不门控它。桌面构建在其他变体上下文中叠加 `premium: 'enhanced'` — 这就是该面板在 Web 端免费但在桌面应用上位于升级 CTA 之后的原因。
+
+## API 参考
+
+- [Military service](https://github.com/koala73/worldmonitor/blob/main/docs/api/MilitaryService.openapi.yaml) — 战区姿态 + 舰艇的后端数据源。
+- 相关：[军事追踪](/zh/military-tracking) — 同一底层数据集的地图图层视图。

@@ -1,0 +1,156 @@
+name: Lint Code
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1'
+
+# See test.yml. The weekly cron is a standalone detection net, so it lands in
+# a group of one via `github.run_id` and is never evicted (#8443).
+concurrency:
+  group: lint-code-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Two jobs, not six. Each job holds a runner for its whole setup, and the
+  # account's concurrent-job cap is what makes PR bursts queue: on 2026-11-23
+  # the pool sat at the cap for 50 minutes. The old classifier, markdown,
+  # public-docs and mintlify-slugs jobs each spent more time getting a runner
+  # and checking out than checking. Each job now classifies the PR itself
+  # (.github/scripts/lint-code-changes.sh) and skips the steps it doesn't need.
+  #
+  # `biome` keeps its name: branch protection requires that check-run name.
+  biome:
+    if: (github.event_name != 'schedule' || github.repository == 'koala73/worldmonitor')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/scripts/lint-code-changes.sh
+      - if: steps.diff.outputs.code == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - if: steps.diff.outputs.code == 'true'
+        uses: ./.github/actions/install-root-deps
+      - name: Run lint and invariant checks
+        if: steps.diff.outputs.code == 'true'
+        # Biome already saturates the runner's 2 physical cores, so run `lint`
+        # alone first, then run the 13 single-threaded Node/tsx checks at
+        # concurrency=2 (matching the 2 physical cores to avoid SMT thrashing).
+        run: >-
+          node scripts/run-parallel-checks.mjs --concurrency=2 --serial=lint
+          lint:overlay-reload-policy
+          lint:outbound-deadlines
+          lint:rate-limit-policies
+          lint:unicode
+          lint:premium-fetch
+          lint:safe-local-storage
+          lint:api-contract
+          sync:tui-catalog:check
+          lint:boundaries
+          sync:live-video-channels:check
+          security:vite-env-secrets
+          version:check
+          sync:bootstrap-tier-keys:check
+
+  # The documentation checks, one runner. Each check step runs after an
+  # earlier one fails (`!cancelled()`), so one push reports every failure.
+  # One owner for markdown lint (#7772): it skips when no markdown changed and
+  # blocks merge through `gate` when it runs.
+  docs-lint:
+    if: (github.event_name != 'schedule' || github.repository == 'koala73/worldmonitor')
+    runs-on: ubuntu-latest
+    # Runs take about 2 minutes. Bound the whole job, not just lint:md, so a
+    # stalled npm ci or docs export cannot hold this required check for the
+    # 360-minute default.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash .github/scripts/lint-code-changes.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - if: steps.diff.outputs.markdown == 'true'
+        uses: ./.github/actions/install-root-deps
+      - name: Markdown lint
+        if: ${{ !cancelled() && steps.diff.outputs.markdown == 'true' }}
+        timeout-minutes: 10
+        run: npm run lint:md
+      - name: Public docs name no plan the product lacks
+        if: ${{ !cancelled() }}
+        run: npm run lint:public-docs
+      - name: Mintlify reserved slugs
+        if: ${{ !cancelled() }}
+        run: node scripts/enforce-mintlify-reserved-slugs.mjs
+      # Why the anchor check exists, and how Mintlify slugs a heading, is
+      # documented once in scripts/check-doc-anchors.mjs. Keep it there.
+      - name: Export rendered docs
+        id: export
+        if: ${{ !cancelled() && steps.diff.outputs.docs == 'true' }}
+        working-directory: docs
+        # The pin holds the CLI wrapper only. `mint export` downloads its
+        # RENDERER at run time, and that is what assigns the ids this gate
+        # trusts — so a slugging change can still arrive with no repo change.
+        # The version is printed below and the checker carries a canary on a
+        # punctuation-sensitive slug, which is the actual protection.
+        # Two renderer faults, not doc content, caused all 28 failures from
+        # 2026-10-18 to 2026-10-21 (main included). The preload stubs mint's
+        # is-online probe, whose timeout path crashed the export before any
+        # page rendered (21), and names each page that fails to render.
+        # The other 7 were an intermittent YAMLException during page render;
+        # the one traced was a generated API-reference page that rendered on
+        # the retry. --disable-openapi skips those ~255 generated pages, which
+        # also halves the export. No authored anchor targets them; their
+        # only fragment links are absolute URLs the checker skips. Mintlify's
+        # PR preview deployment still builds them. The renderer version prints
+        # even when the export fails. The install retries because the npm
+        # registry 404ed an existing mint dependency tarball for two minutes on
+        # 2026-11-03, failing two PRs before any page rendered (#10338).
+        env:
+          NODE_OPTIONS: --import=${{ github.workspace }}/scripts/mint-export-preload.mjs
+        run: |
+          for attempt in 1 2 3; do
+            npm i -g mint@4.2.866 && break
+            [ "$attempt" -lt 3 ] || exit 1
+            echo "::warning::npm i -g mint failed on attempt $attempt; retrying in $((attempt * 20))s."
+            sleep $((attempt * 20))
+          done
+          trap 'echo "renderer: $(cat ~/.mintlify/previews/shared/mint/mint-version.txt 2>/dev/null || echo unknown)"' EXIT
+          if ! mint export --disable-openapi --output "$RUNNER_TEMP/docs-export.zip"; then
+            echo "::warning::Mint export failed once; retrying once."
+            rm -f "$RUNNER_TEMP/docs-export.zip"
+            mint export --disable-openapi --output "$RUNNER_TEMP/docs-export.zip"
+          fi
+      - name: Unpack export
+        if: ${{ !cancelled() && steps.export.outcome == 'success' }}
+        run: unzip -q "$RUNNER_TEMP/docs-export.zip" -d "$RUNNER_TEMP/docs-export"
+      - name: Every doc anchor resolves
+        if: ${{ !cancelled() && steps.export.outcome == 'success' }}
+        run: node scripts/check-doc-anchors.mjs "$RUNNER_TEMP/docs-export"
