@@ -98,8 +98,9 @@ Any other IMAP and SMTP server. `tls_verify = false` is refused unless the host 
 
 ```powershell
 python -m mailcli setup
+python -m mailcli test-login
 python -m mailcli inbox
-python -m mailcli inbox --limit 10
+python -m mailcli inbox --page 2
 python -m mailcli read 1
 python -m mailcli folders
 python -m mailcli search "invoice"
@@ -107,7 +108,9 @@ python -m mailcli send --to friend@example.com --subject "Hello" --body "Hi from
 Get-Content .\note.txt | python -m mailcli send --to friend@example.com --subject "Notes"
 ```
 
-`inbox` numbers messages newest first. `1` is the newest message in the folder, including mail past `--limit`. `*` in the `U` column means unread. Listing does not mark mail as read. `read` does.
+`inbox` fetches only the newest messages, 20 by default, even when the folder has tens of thousands. `--page 2` or `--offset 20` moves to the next older slice. `read 1` opens the first row of that same window. `*` in the `U` column means unread. Listing does not mark mail as read. `read` does. `search` asks the server (Gmail's `X-GM-RAW` when the server offers it) and fetches only the capped hits.
+
+`python -m mailcli test-login` checks the saved sign-in and prints the server's error if it fails. `setup --verify` does that check before anything is saved.
 
 `read` prints the headers and a plain-text body. Charsets and RFC 2047 encoded words are decoded. An HTML-only message is rendered as text. Attachments are listed and are not written out.
 

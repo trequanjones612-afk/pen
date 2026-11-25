@@ -16,7 +16,7 @@ import ssl
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
@@ -38,6 +38,12 @@ class Mailbox:
     folders: dict[str, list[StoredMessage]] = field(default_factory=lambda: {"INBOX": [], "Sent": []})
     _next_uid: int = 1
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    virtual_count: dict[str, int] = field(default_factory=dict)
+    fetched: int = 0
+    fetch_sets: list[str] = field(default_factory=list)
+    last_search: str = ""
+    gmail: bool = False
+    auth_failure: str = ""
 
     def add(self, folder: str, raw: bytes, flags: set[str] | None = None) -> int:
         when = _internaldate(raw)
@@ -59,6 +65,38 @@ class Mailbox:
         key = _canonical(folder, self.folders)
         with self._lock:
             return list(self.folders.get(key, []))
+
+    def total(self, folder: str) -> int:
+        key = _canonical(folder, self.folders)
+        with self._lock:
+            return self.virtual_count.get(key, 0) + len(self.folders.get(key, []))
+
+    def message_by_uid(self, folder: str, uid: int) -> tuple[int, StoredMessage] | None:
+        key = _canonical(folder, self.folders)
+        with self._lock:
+            virtual = self.virtual_count.get(key, 0)
+            if 1 <= uid <= virtual:
+                return uid, _virtual_message(uid)
+            for offset, message in enumerate(self.folders.get(key, []), start=1):
+                if message.uid == uid:
+                    return virtual + offset, message
+        return None
+
+    def message_by_seq(self, folder: str, seq: int) -> StoredMessage | None:
+        key = _canonical(folder, self.folders)
+        with self._lock:
+            virtual = self.virtual_count.get(key, 0)
+            real = self.folders.get(key, [])
+            if seq < 1 or seq > virtual + len(real):
+                return None
+            if seq <= virtual:
+                return _virtual_message(seq)
+            return real[seq - virtual - 1]
+
+    def note_fetch(self, sequence_set: str, count: int) -> None:
+        with self._lock:
+            self.fetch_sets.append(sequence_set)
+            self.fetched += count
 
     def resolve(self, folder: str) -> str | None:
         with self._lock:
@@ -239,6 +277,8 @@ class _ImapHandler(socketserver.BaseRequestHandler):
                 args = tokens[2:]
                 if command == "CAPABILITY":
                     caps = "IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2"
+                    if self.server.mailbox.gmail:
+                        caps += " X-GM-EXT-1"
                     if not tls:
                         caps += " STARTTLS"
                     conn.sendline(f"* CAPABILITY {caps}")
@@ -260,7 +300,8 @@ class _ImapHandler(socketserver.BaseRequestHandler):
                     if _secret_equal(user, self.server.user) and _secret_equal(password, self.server.password):
                         conn.sendline(f"{tag} OK LOGIN completed")
                     else:
-                        conn.sendline(f"{tag} NO [AUTHENTICATIONFAILED] Authentication failed")
+                        failure = self.server.mailbox.auth_failure or "NO [AUTHENTICATIONFAILED] Authentication failed"
+                        conn.sendline(f"{tag} {failure}")
                 elif command == "AUTHENTICATE":
                     if not tls:
                         conn.sendline(f"{tag} NO STARTTLS required")
@@ -288,13 +329,30 @@ class _ImapHandler(socketserver.BaseRequestHandler):
                         conn.sendline(f"{tag} NO no such mailbox")
                         continue
                     selected = resolved
-                    count = len(self.server.mailbox.messages(resolved))
+                    count = self.server.mailbox.total(resolved)
                     conn.sendline("* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)")
                     conn.sendline(f"* {count} EXISTS")
                     conn.sendline("* 0 RECENT")
                     conn.sendline("* OK [UIDVALIDITY 1] UIDs valid")
                     conn.sendline(f"* OK [UIDNEXT {self.server.mailbox.next_uid}] Predicted next UID")
                     conn.sendline(f"{tag} OK [READ-WRITE] SELECT completed")
+                elif command == "FETCH":
+                    if selected is None:
+                        conn.sendline(f"{tag} NO select a mailbox first")
+                        continue
+                    seq_set = args[0] if args else "1:*"
+                    spec = args[-1] if len(args) > 1 else ""
+                    total = self.server.mailbox.total(selected)
+                    sequences = _sequence_numbers(seq_set, total)
+                    sent = 0
+                    for seq in sequences:
+                        message = self.server.mailbox.message_by_seq(selected, seq)
+                        if message is None:
+                            continue
+                        _send_fetch(conn, seq, message, spec)
+                        sent += 1
+                    self.server.mailbox.note_fetch(seq_set, sent)
+                    conn.sendline(f"{tag} OK FETCH completed")
                 elif command == "UID":
                     if selected is None:
                         conn.sendline(f"{tag} NO select a mailbox first")
@@ -404,13 +462,26 @@ def _uid_command(conn: _Buffered, mailbox: Mailbox, folder: str, tag: str, args:
     if kind == "FETCH":
         spec = rest[-1] if rest else ""
         uid_set = rest[0] if rest else "1:*"
-        chosen = _select_uids(messages, uid_set)
-        for index, message in enumerate(messages, 1):
-            if message.uid not in chosen:
-                continue
-            _send_fetch(conn, index, message, spec)
+        sent = 0
+        if mailbox.virtual_count.get(folder, 0):
+            for uid in _uid_numbers(uid_set):
+                found = mailbox.message_by_uid(folder, uid)
+                if found is None:
+                    continue
+                seq, message = found
+                _send_fetch(conn, seq, message, spec)
+                sent += 1
+        else:
+            chosen = _select_uids(messages, uid_set)
+            for index, message in enumerate(messages, 1):
+                if message.uid not in chosen:
+                    continue
+                _send_fetch(conn, index, message, spec)
+                sent += 1
+        mailbox.note_fetch(uid_set, sent)
         conn.sendline(f"{tag} OK FETCH completed")
     elif kind == "SEARCH":
+        mailbox.last_search = _search_key(rest)
         matched = _search(messages, rest)
         joined = " ".join(str(uid) for uid in matched)
         conn.sendline(f"* SEARCH {joined}".rstrip())
@@ -465,7 +536,7 @@ def _search(messages: list[StoredMessage], criteria: list[str]) -> list[int]:
     index = 0
     while index < len(items):
         key = items[index].upper()
-        if key == "TEXT" and index + 1 < len(items):
+        if key in {"TEXT", "X-GM-RAW"} and index + 1 < len(items):
             text = items[index + 1]
             index += 2
             continue
@@ -495,6 +566,71 @@ def _contains(raw: bytes, needle: str) -> bool:
         return False
     blob = "\n".join([parsed.sender, parsed.to, parsed.cc, parsed.subject, parsed.body])
     return folded in blob.casefold()
+
+
+def _search_key(criteria: list[str]) -> str:
+    items = list(criteria)
+    if items and items[0].upper() == "CHARSET" and len(items) >= 2:
+        items = items[2:]
+    for item in items:
+        if item.upper() in {"TEXT", "X-GM-RAW"}:
+            return item.upper()
+    return ""
+
+
+def _uid_numbers(spec: str) -> list[int]:
+    numbers: list[int] = []
+    for part in spec.split(","):
+        if not part or part == "*":
+            continue
+        if ":" in part:
+            start_text, end_text = part.split(":", 1)
+            if start_text == "*" or end_text == "*":
+                continue
+            start, end = int(start_text), int(end_text)
+            if start > end:
+                start, end = end, start
+            numbers.extend(range(start, end + 1))
+        else:
+            numbers.append(int(part))
+    return numbers
+
+
+def _sequence_numbers(spec: str, total: int) -> list[int]:
+    if total <= 0:
+        return []
+    numbers: list[int] = []
+    for part in spec.split(","):
+        if not part:
+            continue
+        if ":" in part:
+            start_text, end_text = part.split(":", 1)
+            start = 1 if start_text == "*" else int(start_text)
+            end = total if end_text == "*" else int(end_text)
+            if start > end:
+                start, end = end, start
+            start = max(1, start)
+            end = min(total, end)
+            numbers.extend(range(start, end + 1))
+        else:
+            seq = int(part)
+            if 1 <= seq <= total:
+                numbers.append(seq)
+    return numbers
+
+
+def _virtual_message(seq: int) -> StoredMessage:
+    """A tiny header-only message so a huge folder does not have to be stored."""
+    when = datetime(2020, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=seq)
+    raw = (
+        f"From: Person {seq} <p{seq}@example.com>\r\n"
+        f"To: demo@localhost\r\n"
+        f"Subject: Virtual message {seq}\r\n"
+        f"Date: {when.strftime('%a, %d %b %Y %H:%M:%S +0000')}\r\n"
+        f"\r\n"
+        f"Body {seq}\r\n"
+    ).encode("ascii")
+    return StoredMessage(uid=seq, raw=raw, flags=set(), internaldate=when)
 
 
 def _select_uids(messages: list[StoredMessage], spec: str) -> set[int]:

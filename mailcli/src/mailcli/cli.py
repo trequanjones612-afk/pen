@@ -9,7 +9,7 @@ from pathlib import Path
 from mailcli import __version__
 from mailcli.config import Settings, default_config_path, list_account_names, load_settings
 from mailcli.errors import MailcliError
-from mailcli.imap_client import ImapSession
+from mailcli.imap_client import DEFAULT_LIMIT, ImapSession, verify_login
 from mailcli.interactive import run_interactive
 from mailcli.render import Row, render_message, render_table
 from mailcli.smtp_client import send_message
@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
                 account=args.account_name or args.account,
                 oauth_client_id=args.oauth_client_id,
                 oauth_tenant=args.oauth_tenant,
+                verify=args.verify,
             )
         if args.command == "accounts":
             return _cmd_accounts(args)
@@ -40,16 +41,21 @@ def main(argv: list[str] | None = None) -> int:
             return run_interactive(settings, plain=plain)
         settings = _settings(args, folder=getattr(args, "folder", None))
         plain = _plain(args)
-        if args.command == "inbox":
-            _cmd_inbox(settings, limit=args.limit, plain=plain)
+        if args.command == "test-login":
+            _cmd_test_login(settings)
+        elif args.command == "inbox":
+            limit, offset = _window(args)
+            _cmd_inbox(settings, limit=limit, offset=offset, plain=plain)
         elif args.command == "read":
-            _cmd_read(settings, args.number)
+            limit, offset = _window(args)
+            _cmd_read(settings, args.number, limit=limit, offset=offset)
         elif args.command == "send":
             _cmd_send(settings, args)
         elif args.command == "folders":
             _cmd_folders(settings)
         elif args.command == "search":
-            _cmd_search(settings, args.text, limit=args.limit, plain=plain)
+            limit, _offset = _window(args)
+            _cmd_search(settings, args.text, limit=limit, plain=plain)
         else:
             raise MailcliError(f"Unknown command {args.command}.")
         return 0
@@ -103,15 +109,22 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--account-name", help="short name used with --account")
     setup.add_argument("--oauth-client-id", help="OAuth client id. Outlook has a default; Gmail requires yours")
     setup.add_argument("--oauth-tenant", help="Microsoft tenant, default consumers for personal accounts")
+    setup.add_argument(
+        "--verify",
+        action="store_true",
+        help="log in before saving, and save only when the server accepts it",
+    )
 
     sub.add_parser("accounts", help="list saved accounts")
+    sub.add_parser("test-login", help="log in with the saved account and report the server's answer")
 
-    inbox = sub.add_parser("inbox", help="list messages, newest first")
-    inbox.add_argument("--limit", type=int, default=25, help="how many rows to print (default 25)")
+    inbox = sub.add_parser("inbox", help="list the newest messages")
+    _add_window(inbox)
     inbox.add_argument("--folder", help="folder to list")
 
-    read = sub.add_parser("read", help="show one message by its inbox number")
-    read.add_argument("number", type=int, help="row number from inbox (1 is the newest)")
+    read = sub.add_parser("read", help="show one message by its row number in the same window as inbox")
+    read.add_argument("number", type=int, help="row number from inbox (1 is the newest in this window)")
+    _add_window(read)
     read.add_argument("--folder", help="folder to read from")
 
     send = sub.add_parser("send", help="send a message through SMTP")
@@ -125,8 +138,14 @@ def _parser() -> argparse.ArgumentParser:
     search = sub.add_parser("search", help="search the current folder")
     search.add_argument("text", help="words to find in the message")
     search.add_argument("--folder", help="folder to search")
-    search.add_argument("--limit", type=int, default=50, help="how many rows to print (default 50)")
+    _add_window(search)
     return parser
+
+
+def _add_window(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="how many messages to fetch (default 20)")
+    parser.add_argument("--page", type=int, default=1, help="page of results, starting at 1")
+    parser.add_argument("--offset", type=int, default=None, help="skip this many newest messages")
 
 
 def _settings(args: argparse.Namespace, folder: str | None) -> Settings:
@@ -183,11 +202,15 @@ def _plain(args: argparse.Namespace) -> bool:
     return False
 
 
-def _cmd_inbox(settings: Settings, *, limit: int, plain: bool) -> None:
-    full = _load(settings)
-    shown = _limited(full, limit)
-    if len(full) > limit:
-        title = f"{settings.folder}  showing {len(shown)} of {len(full)}  newest first"
+def _cmd_test_login(settings: Settings) -> None:
+    verify_login(settings)
+    print(f"Login OK for {settings.user} at {settings.host}:{settings.imap_port}.")
+
+
+def _cmd_inbox(settings: Settings, *, limit: int, offset: int, plain: bool) -> None:
+    shown, exists = _load(settings, limit=limit, offset=offset)
+    if exists > len(shown):
+        title = f"{settings.folder}  showing {len(shown)} of {exists:,}  newest first"
     else:
         noun = "message" if len(shown) == 1 else "messages"
         title = f"{settings.folder}  {len(shown)} {noun}  newest first"
@@ -202,10 +225,10 @@ def _cmd_inbox(settings: Settings, *, limit: int, plain: bool) -> None:
     )
 
 
-def _cmd_read(settings: Settings, number: int) -> None:
+def _cmd_read(settings: Settings, number: int, *, limit: int, offset: int) -> None:
     with ImapSession(settings) as session:
-        summary, parsed, total = session.read(settings.folder, number)
-    title = f"Message {summary.index} of {total}  {settings.folder}"
+        summary, parsed, total = session.read(settings.folder, number, limit=limit, offset=offset)
+    title = f"Message {summary.index} of {total:,}  {settings.folder}"
     print(render_message(title, parsed), end="")
 
 
@@ -230,15 +253,14 @@ def _cmd_folders(settings: Settings) -> None:
 
 def _cmd_search(settings: Settings, text: str, *, limit: int, plain: bool) -> None:
     with ImapSession(settings) as session:
-        found = session.search(settings.folder, text)
-    shown = _limited(found, limit)
+        found, _exists = session.search(settings.folder, text, limit=limit)
     title = (
         f'Search "{text}" in {settings.folder}  {len(found)} match'
         + ("es" if len(found) != 1 else "")
     )
     print(
         render_table(
-            [_as_row(item) for item in shown],
+            [_as_row(item) for item in found],
             title=title,
             plain=plain,
             empty=f'No messages in {settings.folder} matched "{text}".',
@@ -247,15 +269,23 @@ def _cmd_search(settings: Settings, text: str, *, limit: int, plain: bool) -> No
     )
 
 
-def _load(settings: Settings):
+def _load(settings: Settings, *, limit: int, offset: int):
     with ImapSession(settings) as session:
-        return session.summaries(settings.folder)
+        return session.summaries(settings.folder, limit=limit, offset=offset)
 
 
-def _limited(rows, limit: int):
+def _window(args: argparse.Namespace) -> tuple[int, int]:
+    limit = args.limit
     if limit <= 0:
         raise MailcliError("--limit must be a positive number.")
-    return list(rows)[:limit]
+    if args.offset is not None:
+        if args.offset < 0:
+            raise MailcliError("--offset cannot be negative.")
+        return limit, args.offset
+    page = args.page
+    if page < 1:
+        raise MailcliError("--page starts at 1.")
+    return limit, (page - 1) * limit
 
 
 def _as_row(item) -> Row:
