@@ -1,0 +1,99 @@
+// Shared market number formatters. Kept off the `@/utils` barrel so Node tests
+// can import pulse HTML without loading `proxy.ts` → `import.meta.env.DEV`.
+
+import type { CommodityQuoteCurrency } from '@/types';
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+// Two fraction digits round every positive price under half a cent to "$0.00".
+// Sub-cent prices keep up to 8 fraction digits (enough for 1e-8). Anything
+// smaller would still print as zero, so it uses an explicit floor instead of a
+// long or scientific digit string.
+const SUB_CENT_ABS = 0.01;
+const MIN_DISPLAYED_ABS = 1e-8;
+
+function formatTinyPrice(price: number): string {
+  const floor = MIN_DISPLAYED_ABS.toLocaleString(undefined, { maximumFractionDigits: 8 });
+  return price < 0 ? `>-$${floor}` : `<$${floor}`;
+}
+
+// Index levels (^GSPC), exchange-suffixed listings priced in local currency
+// (600519.SS, 7203.T, DFMGI.AE) and FX pairs (SARUSD=X) are not dollars. US
+// tickers, US share classes (BRK.B, BF.A), US ETFs and dollar futures (BZ=F)
+// are. Quotes carry no currency field, so the symbol is the only signal.
+const NON_DOLLAR_QUOTE = /^\^|\.(?![AB]$)[A-Z]{1,3}$|=X$/i;
+
+/** formatPrice, without the dollar sign when the symbol is not quoted in dollars. */
+export function formatQuotePrice(symbol: string, price: number | null | undefined): string {
+  const formatted = formatPrice(price);
+  return NON_DOLLAR_QUOTE.test(symbol) ? formatted.replace('$', '') : formatted;
+}
+
+const COMMODITY_CURRENCY_FORMAT: Record<CommodityQuoteCurrency, (dollars: string) => string> = {
+  USX: (dollars) => `${dollars.replace('$', '')}¢`,
+  EUR: (dollars) => dollars.replace('$', '€'),
+};
+
+/** formatPrice in the contract's quote currency; US dollars when it has none. */
+export function formatCommodityPrice(price: number | null | undefined, currency?: CommodityQuoteCurrency): string {
+  const formatted = formatPrice(price);
+  return currency && formatted.includes('$') ? COMMODITY_CURRENCY_FORMAT[currency](formatted) : formatted;
+}
+
+export function formatPrice(price: number | null | undefined): string {
+  if (!isFiniteNumber(price)) return '--';
+  const abs = Math.abs(price);
+  if (price !== 0 && abs < SUB_CENT_ABS) {
+    if (abs < MIN_DISPLAYED_ABS) return formatTinyPrice(price);
+    return `$${price.toLocaleString(undefined, { maximumFractionDigits: 8 })}`;
+  }
+  if (price >= 1000) {
+    return `$${price.toLocaleString(undefined, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    })}`;
+  }
+  // Sub-dollar quotes (the old token list used six places) keep extra digits.
+  // A one-cent price still shows two places, so $0.50 does not become $0.5.
+  if (abs < 1) {
+    return `$${price.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    })}`;
+  }
+  return `$${price.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/** "$188.6B", "-$1.2B"; amounts under $0.1B keep two places so -0.04 is not "$-0.0B". */
+export function formatUsdBillions(billions: number): string {
+  const digits = Math.abs(billions) < 0.1 ? 2 : 1;
+  const magnitude = Math.abs(billions).toFixed(digits);
+  const sign = billions < 0 && Number(magnitude) !== 0 ? '-' : '';
+  return `${sign}$${magnitude}B`;
+}
+
+export function formatChange(change: number | null | undefined): string {
+  if (!isFiniteNumber(change)) return '--';
+  const sign = change >= 0 ? '+' : '';
+  return `${sign}${change.toFixed(2)}%`;
+}
+
+export function getChangeClass(change: number | null | undefined): string {
+  if (!isFiniteNumber(change)) return '';
+  return change >= 0 ? 'up' : 'down';
+}
+
+export function getHeatmapClass(change: number | null | undefined): string {
+  if (!isFiniteNumber(change)) return '';
+  const abs = Math.abs(change);
+  const direction = change >= 0 ? 'up' : 'down';
+
+  if (abs >= 2) return `${direction}-3`;
+  if (abs >= 1) return `${direction}-2`;
+  return `${direction}-1`;
+}
