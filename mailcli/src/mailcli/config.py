@@ -35,6 +35,7 @@ class Settings:
     tls_cert: str | None = None
     folder: str = "INBOX"
     timeout: float = 30.0
+    pager: bool = True
     security: str = "starttls"
     auth: str = "password"
     oauth_client_id: str = ""
@@ -404,6 +405,7 @@ def _apply_mapping(settings: Settings, values: dict[str, object]) -> None:
         "cert",
         "folder",
         "timeout",
+        "pager",
         "security",
         "smtp_host",
         "smtp_security",
@@ -451,6 +453,8 @@ def _apply_mapping(settings: Settings, values: dict[str, object]) -> None:
         settings.oauth_client_id = str(values["oauth_client_id"]).strip()
     if "oauth_tenant" in values:
         settings.oauth_tenant = str(values["oauth_tenant"]).strip()
+    if "pager" in values:
+        settings.pager = _bool_value(values["pager"], "pager")
     if "timeout" in values:
         try:
             settings.timeout = float(values["timeout"])

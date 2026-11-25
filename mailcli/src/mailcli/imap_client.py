@@ -160,6 +160,7 @@ class ImapSession:
         *,
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
+        prefer_html: bool = False,
     ) -> tuple[Summary, ParsedMessage, int]:
         """Open row ``number`` in the same window ``inbox`` would print."""
         if number < 1:
@@ -187,7 +188,7 @@ class ImapSession:
                 break
         if not raw:
             raise MailcliError(f"The server returned no body for message {number}.")
-        parsed = parse_message(raw)
+        parsed = parse_message(raw, prefer_html=prefer_html)
         try:
             imap.uid("STORE", summary.uid, "+FLAGS", "(\\Seen)")
         except imaplib.IMAP4.error as exc:
@@ -197,7 +198,15 @@ class ImapSession:
         summary.unread = False
         return summary, parsed, exists
 
-    def read_uid(self, folder: str, uid: str, *, index: int, exists: int) -> tuple[Summary, ParsedMessage, int]:
+    def read_uid(
+        self,
+        folder: str,
+        uid: str,
+        *,
+        index: int,
+        exists: int,
+        prefer_html: bool = False,
+    ) -> tuple[Summary, ParsedMessage, int]:
         """Fetch one message by UID. The row number comes from the saved listing."""
         self.ensure()
         imap = self._require()
@@ -211,7 +220,7 @@ class ImapSession:
                 break
         if not raw:
             raise MailcliError(f"The server returned no body for message {index}.")
-        parsed = parse_message(raw)
+        parsed = parse_message(raw, prefer_html=prefer_html)
         try:
             imap.uid("STORE", uid, "+FLAGS", "(\\Seen)")
         except imaplib.IMAP4.error as exc:

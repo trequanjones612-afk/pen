@@ -19,6 +19,8 @@ from mailcli.config import Settings, list_account_names, load_settings
 from mailcli.errors import MailcliError
 from mailcli.imap_client import DEFAULT_LIMIT, ImapSession, Summary
 from mailcli.listing import Listing, history_path, save_listing
+from mailcli.mimeutil import format_links
+from mailcli.pager import display
 from mailcli.render import Row, render_message, render_table
 from mailcli.smtp_client import send_message
 
@@ -38,6 +40,8 @@ _COMMANDS = (
     "send",
     "reply",
     "open",
+    "links",
+    "view",
     "account",
     "accounts",
     "help",
@@ -93,6 +97,7 @@ class _Shell:
         self.query = ""
         self.rows: list[Summary] = []
         self.exists = 0
+        self.prefer_html = False
 
     def prompt(self) -> str:
         account = self.session.settings.account or "mail"
@@ -140,6 +145,19 @@ class _Shell:
             return False
         if lowered == "open":
             self.open_html(_number(rest))
+            return False
+        if lowered == "links":
+            full = "--full" in rest or rest.strip().endswith(" full")
+            number_text = rest.replace("--full", "").replace("full", "").strip()
+            self.show_links(_number(number_text), full=full)
+            return False
+        if lowered == "view":
+            choice = rest.strip().lower()
+            if choice not in {"html", "text"}:
+                print("Usage: view html   or   view text")
+                return False
+            self.prefer_html = choice == "html"
+            print(f"Reading the {choice} part when a message has both.")
             return False
         if lowered == "search":
             text = rest.strip() or _ask("Search: ")
@@ -195,15 +213,23 @@ class _Shell:
     def read(self, number: int) -> None:
         summary = self._row(number)
         _summary, parsed, exists = self.session.read_uid(
-            self.folder, summary.uid, index=number, exists=self.exists or 0
+            self.folder,
+            summary.uid,
+            index=number,
+            exists=self.exists or 0,
+            prefer_html=self.prefer_html,
         )
         title = f"Message {number} of {exists:,}  {self.folder}"
-        print(render_message(title, parsed), end="")
+        display(render_message(title, parsed), enabled=self.session.settings.pager)
 
     def open_html(self, number: int) -> None:
         summary = self._row(number)
         _summary, parsed, _exists = self.session.read_uid(
-            self.folder, summary.uid, index=number, exists=self.exists or 0
+            self.folder,
+            summary.uid,
+            index=number,
+            exists=self.exists or 0,
+            prefer_html=True,
         )
         if not parsed.html:
             print("This message has no HTML part.")
@@ -218,6 +244,13 @@ class _Shell:
             handle.close()
         webbrowser.open(path.resolve().as_uri())
         print(f"Opened {path}")
+
+    def show_links(self, number: int, *, full: bool) -> None:
+        summary = self._row(number)
+        _summary, parsed, _exists = self.session.read_uid(
+            self.folder, summary.uid, index=number, exists=self.exists or 0
+        )
+        print(format_links(parsed.links, full=full))
 
     def folders(self) -> None:
         names = self.session.folders()
@@ -263,7 +296,11 @@ class _Shell:
         if reply_to is not None:
             summary = self._row(reply_to)
             _summary, parsed, _exists = self.session.read_uid(
-                self.folder, summary.uid, index=reply_to, exists=self.exists or 0
+                self.folder,
+                summary.uid,
+                index=reply_to,
+                exists=self.exists or 0,
+                prefer_html=self.prefer_html,
             )
             recipient = _address(parsed.sender)
             subject = parsed.subject
@@ -358,6 +395,8 @@ def _banner() -> None:
     print("  read <#>      open a row from the list on screen. A bare number works")
     print("  search <text> then read <#> uses those results")
     print("  open <#>      open the HTML part in the browser")
+    print("  links <#>     list that message's links. links <#> --full is uncut")
+    print("  view html     or view text, when a message has both parts")
     print("  folder <name>, folders, refresh")
     print("  compose       To, Subject, and a body ended by a line with only .")
     print("  reply <#>     answer that row. Sending asks you to confirm")

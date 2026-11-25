@@ -49,10 +49,96 @@ def test_html_parser_lists_links_and_skips_scripts() -> None:
         "<script>alert(1)</script></body></html>"
     )
     assert "See the notes" in rendered
+    assert "[1]" in rendered
     assert "alert" not in rendered
     assert "color:red" not in rendered
-    assert "Links:" in rendered
-    assert "1. https://example.com/notes" in rendered
+    assert "Links:" not in rendered
+
+
+def test_marketing_html_is_compact() -> None:
+    from pathlib import Path
+
+    from mailcli.mimeutil import format_links, render_html
+
+    html = Path(__file__).parent.joinpath("fixtures", "marketing.html").read_text(encoding="utf-8")
+    rendered = render_html(html)
+    lines = rendered.text.splitlines()
+    assert lines
+    assert all(line.strip() == line and line.strip() for line in lines if line != "")
+    blank_run = 0
+    for line in lines:
+        if line == "":
+            blank_run += 1
+            assert blank_run <= 1
+        else:
+            blank_run = 0
+    assert "Preview the sale" not in rendered.text
+    assert "Hidden offer code" not in rendered.text
+    assert "Black Friday" not in rendered.text
+    assert "spacer" not in rendered.text.lower()
+    assert "|" not in rendered.text or "Calendars" in rendered.text
+    assert "shutterfly.com or the app" in rendered.text
+    assert "Holiday Cards [1]" in rendered.text
+    assert "https://" not in rendered.text
+    assert rendered.links[0].startswith("https://click.example.com/track")
+    assert rendered.links.count("mailto:deals@example.com") == 1
+    assert "#" not in rendered.links
+    short = format_links(rendered.links)
+    assert "..." in short
+    assert "https%3A%2F%2Fwww.example.com%2Fholiday-cards" not in short
+    full = format_links(rendered.links, full=True)
+    assert "https%3A%2F%2Fwww.example.com%2Fholiday-cards" in full
+    assert len(lines) < 15
+
+
+def test_plain_stub_falls_back_to_html() -> None:
+    raw = (
+        b"From: Shop <shop@example.com>\r\n"
+        b"To: you@example.com\r\n"
+        b"Subject: Sale\r\n"
+        b"Date: Fri, 20 Nov 2026 07:55:00 +0000\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b"Content-Type: multipart/alternative; boundary=b\r\n"
+        b"\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"View this email in your browser.\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"\r\n"
+        b"<html><body><p>Save 40% on photo books this weekend.</p></body></html>\r\n"
+        b"--b--\r\n"
+    )
+    parsed = parse_message(raw)
+    assert parsed.body_source == "html"
+    assert "Save 40%" in parsed.body
+    forced = parse_message(raw, prefer_html=False)
+    assert "Save 40%" in forced.body
+    plain = (
+        b"From: A <a@example.com>\r\n"
+        b"To: you@example.com\r\n"
+        b"Subject: Both\r\n"
+        b"Date: Fri, 20 Nov 2026 07:55:00 +0000\r\n"
+        b"MIME-Version: 1.0\r\n"
+        b"Content-Type: multipart/alternative; boundary=b\r\n"
+        b"\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        b"\r\n"
+        b"This is the real plain text of the message, long enough to keep.\r\n"
+        b"--b\r\n"
+        b"Content-Type: text/html; charset=utf-8\r\n"
+        b"\r\n"
+        b"<html><body><p>HTML version only.</p></body></html>\r\n"
+        b"--b--\r\n"
+    )
+    kept = parse_message(plain)
+    assert kept.body_source == "text"
+    assert "real plain text" in kept.body
+    html = parse_message(plain, prefer_html=True)
+    assert html.body_source == "html"
+    assert "HTML version only." in html.body
 
 
 def test_html_only_message() -> None:

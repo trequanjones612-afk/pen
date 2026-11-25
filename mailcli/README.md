@@ -136,7 +136,7 @@ Get-Content .\note.txt | python -m mailcli send --to friend@example.com --subjec
 
 `python -m mailcli test-login` checks the saved sign-in and prints the server's error if it fails. `setup --verify` does that check before anything is saved.
 
-`read` prints the headers and a plain-text body. Charsets and RFC 2047 encoded words are decoded. An HTML-only message is rendered as text, with links listed at the end. `open` writes that HTML to a temporary file and opens it in the browser. Attachments are listed and are not written out.
+`read` prints the headers and a plain-text body. When a message has both parts, the plain part is used unless it is only a stub; `read --html` or `view html` in the shell shows the HTML part instead. Marketing HTML is flattened: hidden preheaders, scripts, and spacer images are dropped, and links stay inline as `Holiday Cards [1]`. `links 1` or `read 1 --links` prints those URLs, shortened unless you add `--full`. `open` still opens the original HTML. A body taller than the terminal pauses like `more` (space for the next page, q to stop). Set `pager = false` in the config to print it all at once.
 
 ## Tests
 
