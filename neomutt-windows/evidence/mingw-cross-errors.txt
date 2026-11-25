@@ -1,0 +1,114 @@
+MinGW-w64 cross compile of NeoMutt
+Source: https://github.com/neomutt/neomutt
+Commit: 69f25882271a266ef5ff3d1495e4a408208425e8
+Compiler: x86_64-w64-mingw32-gcc (GCC) 13-win32 (Ubuntu gcc-mingw-w64 13.2.0)
+Command: ./configure --host=x86_64-w64-mingw32 --disable-doc --disable-nls --disable-idn2 --disable-pgp --disable-smime --with-ncurses=/tmp/mingw-deps --with-iconv=/tmp/mingw-deps
+Then: make -k -j
+Result: no neomutt.exe. Configure succeeded only after cross-building ncurses and libiconv.
+regex.h is absent on MinGW; a PCRE2 POSIX shim was added only to expose the next errors. It is not a port.
+Diagnostic lines: 1172. Unique diagnostics: 103.
+
+Unique diagnostics (count, message):
+ 379  ./mutt/date.h:66:101: error: unknown type name ‘locale_t’; did you mean ‘_locale_t’?
+ 291  ./core/neomutt.h:51:3: error: unknown type name ‘locale_t’
+ 125  ./browser/lib.h:86:3: error: unknown type name ‘uid_t’
+ 125  ./browser/lib.h:87:3: error: unknown type name ‘gid_t’
+ 125  ./browser/lib.h:88:3: error: unknown type name ‘nlink_t’
+  15  mutt/date.h:66:101: error: unknown type name ‘locale_t’; did you mean ‘_locale_t’?
+  10  core/neomutt.h:51:3: error: unknown type name ‘locale_t’
+   3  browser/lib.h:86:3: error: unknown type name ‘uid_t’
+   3  browser/lib.h:87:3: error: unknown type name ‘gid_t’
+   3  browser/lib.h:88:3: error: unknown type name ‘nlink_t’
+   1  muttlib.c:37:10: fatal error: pwd.h: No such file or directory
+   1  system.c:35:10: fatal error: sys/wait.h: No such file or directory
+   1  mutt_signal.c:57:10: error: ‘SIGTSTP’ undeclared (first use in this function)
+   1  mutt_signal.c:66:15: error: ‘SIGSTOP’ undeclared (first use in this function)
+   1  mutt_signal.c:70:10: error: ‘SIGCONT’ undeclared (first use in this function); did you mean ‘SIGINT’?
+   1  mutt_signal.c:79:10: error: ‘SIGWINCH’ undeclared (first use in this function)
+   1  mutt_signal.c:125:10: error: variable ‘act’ has initializer but incomplete type
+   1  mutt_signal.c:125:20: error: storage size of ‘act’ isn’t known
+   1  version.c:34:10: fatal error: sys/utsname.h: No such file or directory
+   1  main.c:93:10: fatal error: pwd.h: No such file or directory
+   1  core/neomutt.c:102:32: error: ‘LC_GLOBAL_LOCALE’ undeclared (first use in this function)
+   1  core/neomutt.c:104:34: error: ‘LC_TIME_MASK’ undeclared (first use in this function)
+   1  pop/lib.c:32:10: fatal error: arpa/inet.h: No such file or directory
+   1  browser/expando.c:30:10: fatal error: grp.h: No such file or directory
+   1  question/question.c:32:10: fatal error: langinfo.h: No such file or directory
+   1  alias/alias.c:34:10: fatal error: pwd.h: No such file or directory
+   1  send/sendmail.c:42:10: fatal error: sys/wait.h: No such file or directory
+   1  send/smtp.c:38:10: fatal error: arpa/inet.h: No such file or directory
+   1  attach/mutt_attach.c:41:10: fatal error: sys/wait.h: No such file or directory
+   1  gui/curs_lib.c:41:10: fatal error: termios.h: No such file or directory
+   1  gui/resize.c:56:23: error: return type is an incomplete type
+   1  gui/resize.c:58:10: error: variable ‘w’ has initializer but incomplete type
+   1  gui/resize.c:58:18: error: storage size of ‘w’ isn’t known
+   1  gui/resize.c:66:15: error: ‘TIOCGWINSZ’ undeclared (first use in this function)
+   1  gui/resize.c:78:10: error: variable ‘w’ has initializer but incomplete type
+   1  gui/resize.c:78:18: error: storage size of ‘w’ isn’t known
+   1  maildir/mailbox.c:775:8: error: too many arguments to function ‘mkdir’
+   1  maildir/mailbox.c:784:8: error: too many arguments to function ‘mkdir’
+   1  maildir/mailbox.c:795:8: error: too many arguments to function ‘mkdir’
+   1  ncrypt/crypt.c:108:10: fatal error: sys/resource.h: No such file or directory
+   1  imap/util.c:36:10: fatal error: arpa/inet.h: No such file or directory
+   1  conn/raw.c:34:10: fatal error: netdb.h: No such file or directory
+   1  conn/getdomain.c:33:10: fatal error: netdb.h: No such file or directory
+   1  conn/tunnel.c:36:10: fatal error: sys/wait.h: No such file or directory
+   1  mutt/charset.c:35:10: fatal error: langinfo.h: No such file or directory
+   1  mutt/date.c:976:72: error: unknown type name ‘locale_t’; did you mean ‘_locale_t’?
+   1  mutt/filter.c:33:10: fatal error: sys/wait.h: No such file or directory
+   1  mutt/file.c:168:37: error: ‘O_NOFOLLOW’ undeclared (first use in this function)
+   1  mutt/file.c:168:50: error: ‘O_CLOEXEC’ undeclared (first use in this function)
+   1  mutt/file.c:521:31: error: ‘O_NOFOLLOW’ undeclared (first use in this function)
+   1  mutt/file.c:521:44: error: ‘O_CLOEXEC’ undeclared (first use in this function)
+   1  mutt/file.c:877:10: error: too many arguments to function ‘mkdir’
+   1  mutt/file.c:883:8: error: too many arguments to function ‘mkdir’
+   1  mutt/file.c:1095:10: error: variable ‘lck’ has initializer but incomplete type
+   1  mutt/file.c:1095:16: error: storage size of ‘lck’ isn’t known
+   1  mutt/file.c:1096:23: error: ‘F_WRLCK’ undeclared (first use in this function)
+   1  mutt/file.c:1096:33: error: ‘F_RDLCK’ undeclared (first use in this function)
+   1  mutt/file.c:1099:20: error: ‘F_SETLK’ undeclared (first use in this function)
+   1  mutt/file.c:1138:10: error: variable ‘unlockit’ has initializer but incomplete type
+   1  mutt/file.c:1138:16: error: storage size of ‘unlockit’ isn’t known
+   1  mutt/file.c:1139:21: error: ‘F_UNLCK’ undeclared (first use in this function)
+   1  mutt/file.c:1141:20: error: ‘F_SETLK’ undeclared (first use in this function)
+   1  mutt/file.c:1229:32: error: ‘O_NOFOLLOW’ undeclared (first use in this function)
+   1  mutt/file.c:1229:45: error: ‘O_CLOEXEC’ undeclared (first use in this function)
+   1  mutt/path.c:36:10: fatal error: pwd.h: No such file or directory
+   1  mutt/signal.c:41:8: error: unknown type name ‘sigset_t’
+   1  mutt/signal.c:43:8: error: unknown type name ‘sigset_t’
+   1  mutt/signal.c:174:10: error: variable ‘act’ has initializer but incomplete type
+   1  mutt/signal.c:174:20: error: storage size of ‘act’ isn’t known
+   1  mutt/signal.c:175:10: error: variable ‘old_act’ has initializer but incomplete type
+   1  mutt/signal.c:175:20: error: storage size of ‘old_act’ isn’t known
+   1  mutt/signal.c:180:13: error: ‘SIGPIPE’ undeclared (first use in this function); did you mean ‘SIGFPE’?
+   1  mutt/signal.c:188:13: error: ‘SIGHUP’ undeclared (first use in this function)
+   1  mutt/signal.c:189:13: error: ‘SIGQUIT’ undeclared (first use in this function)
+   1  mutt/signal.c:192:27: error: ‘SIGTSTP’ undeclared (first use in this function)
+   1  mutt/signal.c:199:13: error: ‘SIGALRM’ undeclared (first use in this function); did you mean ‘SIGABRT’?
+   1  mutt/signal.c:206:13: error: ‘SIGCONT’ undeclared (first use in this function); did you mean ‘SIGINT’?
+   1  mutt/signal.c:209:13: error: ‘SIGWINCH’ undeclared (first use in this function)
+   1  mutt/signal.c:217:19: error: ‘SA_NOCLDSTOP’ undeclared (first use in this function)
+   1  mutt/signal.c:218:13: error: ‘SIGCHLD’ undeclared (first use in this function)
+   1  mutt/signal.c:234:22: error: ‘SIGHUP’ undeclared (first use in this function)
+   1  mutt/signal.c:235:22: error: ‘SIGTSTP’ undeclared (first use in this function)
+   1  mutt/signal.c:237:22: error: ‘SIGWINCH’ undeclared (first use in this function)
+   1  mutt/signal.c:238:15: error: ‘SIG_BLOCK’ undeclared (first use in this function); did you mean ‘SIG_ACK’?
+   1  mutt/signal.c:250:15: error: ‘SIG_UNBLOCK’ undeclared (first use in this function)
+   1  mutt/signal.c:265:10: error: variable ‘sa’ has initializer but incomplete type
+   1  mutt/signal.c:265:20: error: storage size of ‘sa’ isn’t known
+   1  mutt/signal.c:272:13: error: ‘SIGQUIT’ undeclared (first use in this function)
+   1  mutt/signal.c:275:25: error: ‘SIGCHLD’ undeclared (first use in this function)
+   1  mutt/signal.c:276:15: error: ‘SIG_BLOCK’ undeclared (first use in this function); did you mean ‘SIG_ACK’?
+   1  mutt/signal.c:289:15: error: ‘SIG_UNBLOCK’ undeclared (first use in this function)
+   1  mutt/signal.c:292:15: error: ‘SIGQUIT’ undeclared (first use in this function)
+   1  mutt/signal.c:297:12: error: variable ‘sa’ has initializer but incomplete type
+   1  mutt/signal.c:297:22: error: storage size of ‘sa’ isn’t known
+   1  mutt/signal.c:317:10: error: variable ‘sa’ has initializer but incomplete type
+   1  mutt/signal.c:317:20: error: storage size of ‘sa’ isn’t known
+   1  mutt/signal.c:338:10: error: variable ‘sa’ has initializer but incomplete type
+   1  mutt/signal.c:338:20: error: storage size of ‘sa’ isn’t known
+   1  mutt/signal.c:345:13: error: ‘SIGPIPE’ undeclared (first use in this function); did you mean ‘SIGFPE’?
+   1  mutt/signal.c:350:13: error: ‘SIGTSTP’ undeclared (first use in this function)
+   1  mutt/signal.c:351:13: error: ‘SIGCONT’ undeclared (first use in this function); did you mean ‘SIGINT’?
+   1  mutt/signal.c:46:25: error: storage size of ‘SysOldInt’ isn’t known
+   1  mutt/signal.c:48:25: error: storage size of ‘SysOldQuit’ isn’t known

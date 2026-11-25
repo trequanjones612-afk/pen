@@ -1,0 +1,65 @@
+# NeoMutt config for Proton Mail Bridge on this computer.
+#
+# Bridge is a local IMAP/SMTP server. It listens on 127.0.0.1 only.
+# Defaults (change these if Bridge's Mailbox details show something else):
+#   IMAP  127.0.0.1  port 1143  STARTTLS
+#   SMTP  127.0.0.1  port 1025  STARTTLS
+#
+# Replace every you@example.com and REPLACE-WITH-... value.
+# Those strings are placeholders. Do not put a real Bridge password in a
+# file you commit or share. The password Bridge shows is not your Proton
+# account password.
+#
+# If you delete the two *_pass lines, NeoMutt asks for the password at startup.
+#
+# Bridge's certificate is created on this machine and is not signed by a
+# public authority. On the first connection NeoMutt asks you to reject it,
+# accept it once, or accept it always. Choose "accept always". The decision
+# is stored in $certificate_file. Connect to 127.0.0.1, which is the name
+# Bridge's certificate is issued for.
+#
+# If Bridge's advanced settings use SSL instead of STARTTLS, change the
+# URLs to imaps:// and smtps:// and set ssl_starttls to no. Use the ports
+# Bridge shows.
+
+set realname = "Your Name"
+set from = "you@example.com"
+set use_from = yes
+set envelope_from = yes
+
+set imap_user = "you@example.com"
+set imap_pass = "REPLACE-WITH-BRIDGE-MAILBOX-PASSWORD"
+set smtp_user = "you@example.com"
+set smtp_pass = "REPLACE-WITH-BRIDGE-MAILBOX-PASSWORD"
+
+# The MSYS2 package is built with GSSAPI. Name the password methods so
+# NeoMutt uses the Bridge password.
+set imap_authenticators = "plain:login"
+set smtp_authenticators = "plain:login"
+
+set folder = "imap://127.0.0.1:1143/"
+set spoolfile = "+INBOX"
+set record = "+Sent"
+set postponed = "+Drafts"
+set move = no
+set imap_check_subscribed = yes
+set imap_idle = yes
+set imap_keepalive = 300
+
+set smtp_url = "smtp://127.0.0.1:1025/"
+
+set ssl_starttls = yes
+set ssl_force_tls = yes
+set certificate_file = "~/.neomutt/certificates"
+
+set editor = "notepad"
+set charset = "utf-8"
+set assumed_charset = "utf-8"
+set send_charset = "utf-8"
+
+# Header cache. The MSYS2 build includes gdbm. Create the directory first:
+#   mkdir -p ~/.neomutt
+set header_cache = "~/.neomutt/cache.db"
+
+# Optional: keep a copy of the rc's mailbox list short.
+mailboxes +INBOX +Sent +Drafts +Archive +Spam +Trash
