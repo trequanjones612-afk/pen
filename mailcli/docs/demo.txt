@@ -1,97 +1,58 @@
-mailcli setup and inbox
-========================
+mailcli shell
+=============
 
-Setup is the real wizard (mailcli.setup, which `python -m mailcli setup` calls).
-The provider chosen below is Gmail. The app password was typed at the hidden
-prompt and is not in this transcript. It was kept in the credential store for
-that process, not written to gmail.toml. On Windows that store is Credential
-Manager via the keyring package. This VM's Secret Service prompt does not
-unlock, so the capture used an in-memory keyring backend.
+Local server: GreenMail 2.1.15, account demo@localhost, IMAPS 127.0.0.1:3993,
+SMTPS 127.0.0.1:3465, security ssl, tls_verify false. MAILCLI_PASSWORD was set
+for that local account and is not shown. No Gmail account was contacted.
 
-$ python -m mailcli setup
+The shell logs in once, prints a short banner, and lists the inbox. Commands
+below were typed at the prompt. A pipe does not echo keystrokes, so they are
+written on the prompt lines they were entered at.
 
-Choose a mail provider. mailcli will fill in the servers.
+$ python -m mailcli shell
 
-  1  Gmail
-  2  Outlook, Hotmail, or Live
-  3  Yahoo
-  4  iCloud
-  5  Proton
-  6  Custom server
+Connecting to 127.0.0.1:3993...
+mailcli 0.2.0. Type help, or a command. Ctrl+D quits.
+  inbox [n]     newest mail (n rows). ls is the same command
+  next, prev    another page of the inbox
+  read <#>      open a row from the list on screen. A bare number works
+  search <text> then read <#> uses those results
+  open <#>      open the HTML part in the browser
+  folder <name>, folders, refresh
+  compose       To, Subject, and a body ended by a line with only .
+  reply <#>     answer that row. Sending asks you to confirm
+  account <name>, accounts, clear, quit
 
-Provider number: 1
-
-Gmail
-  IMAP  imap.gmail.com:993  SSL
-  SMTP  smtp.gmail.com:465  SSL
-Gmail rejects your normal account password for IMAP and SMTP.
-Turn on 2-Step Verification, then create an app password:
-  https://myaccount.google.com/apppasswords
-Google's own steps: https://support.google.com/accounts/answer/185833
-The app password is 16 letters. Spaces in it do not matter.
-SMTP on port 587 with STARTTLS also works; this preset uses port 465 with SSL.
-If you would rather use OAuth, pass --oauth-client-id from a Google Cloud
-client you registered yourself. An app password is the usual path.
-
-Email address: you@gmail.com
-Account name [you]: home
-App password: (typed, not echoed)
-
-Saved account home (Gmail) to gmail.toml
-The password or token is in the OS credential store, not in that file.
-home is the default account.
-
-gmail.toml after setup (no password, no token):
-
-default_account = "home"
-
-[accounts.home]
-provider = "gmail"
-user = "you@gmail.com"
-imap_host = "imap.gmail.com"
-imap_port = 993
-imap_security = "ssl"
-smtp_host = "smtp.gmail.com"
-smtp_port = 465
-smtp_security = "ssl"
-auth = "password"
-folder = "INBOX"
-tls_verify = true
-
-Inbox
------
-
-The mailbox below is GreenMail 2.1.15 on this machine, configured as a custom
-account (IMAPS 127.0.0.1:3993, SMTPS 127.0.0.1:3465, tls_verify = false).
-No Gmail, Outlook, Yahoo, iCloud, or Proton account was contacted.
-MAILCLI_PASSWORD was set for that local account and is not shown.
-Six messages were delivered over SMTP. "Re: design review" was already read.
-
-$ python -m mailcli --config greenmail.toml --plain inbox
-INBOX  6 messages  newest first
+Fetching newest 4 of 4...
+INBOX  4 messages  newest first
 
 #  U  Date              From                          Subject
--  -  ----------------  ----------------------------  ---------------------------------
+-  -  ----------------  ----------------------------  ---------------------------
 1  *  2026-11-25 09:14  Maya Chen <maya.chen@exam...  Project kickoff notes
-2  *  2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
-3  *  2026-11-23 11:05  Priya Shah <priya.shah@ex...  Saturday ridge hike
-4  *  2026-11-22 08:27  Sam Okonkwo <sam.okonkwo@...  Build failed on main — auth tests
-5     2026-11-21 15:18  Helena Vogt <helena.vogt@...  Re: design review
-6  *  2026-11-20 07:55  Noah Ibrahim <noah.ibrahi...  Welcome to the lab list
-
-$ python -m mailcli --config greenmail.toml read 1
-Message 1 of 6  INBOX
+2     2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
+3     2026-11-21 15:18  Helena Vogt <helena.vogt@...  Re: design review
+4  *  2026-11-20 07:55  Noah Ibrahim <noah.ibrahi...  Welcome to the lab list
+mailcli [lab INBOX]> 1
+Fetching message 1...
+Message 1 of 4  INBOX
 
 From: Maya Chen <maya.chen@example.com>
 To: demo@localhost
 Date: Wed, 25 Nov 2026 09:14:00 +0000
 Subject: Project kickoff notes
 
-Hi team,
-
 The kickoff is Thursday at 10:00 in the east lab.
 
 Please read the attached agenda.
 
 Attachments:
-  - agenda.txt (text/plain, 50 B)
+  - agenda.txt (text/plain, 25 B)
+mailcli [lab INBOX]> search invoice
+Searching INBOX...
+Fetching 1 of 1 search hits...
+Search "invoice" in INBOX  1 match
+
+#  U  Date              From                          Subject
+-  -  ----------------  ----------------------------  ---------------------------
+1     2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
+mailcli [lab INBOX]> quit

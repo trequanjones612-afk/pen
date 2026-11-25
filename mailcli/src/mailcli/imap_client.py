@@ -67,6 +67,28 @@ class ImapSession:
         self._imap = _connect(self.settings)
         return self
 
+    def connect(self) -> None:
+        if self._imap is not None:
+            _close(self._imap)
+        self._imap = _connect(self.settings)
+
+    def ensure(self) -> None:
+        """Keep one IMAP connection, and open a new one if the server dropped it."""
+        if self._imap is None:
+            self.connect()
+            return
+        try:
+            self._imap.noop()
+        except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError, TimeoutError, socket.timeout):
+            _close(self._imap)
+            self._imap = None
+            self.connect()
+
+    def close(self) -> None:
+        if self._imap is not None:
+            _close(self._imap)
+            self._imap = None
+
     def __exit__(self, exc_type, exc, tb) -> None:
         imap = self._imap
         self._imap = None
@@ -108,6 +130,7 @@ class ImapSession:
         The window is the newest ``limit`` messages after skipping ``offset``
         newer ones. Only that sequence range is fetched.
         """
+        self.ensure()
         limit, offset = _bounds(limit, offset)
         imap = self._require()
         exists = _select(imap, folder)
@@ -117,14 +140,18 @@ class ImapSession:
             else:
                 _status(f"No messages in that range. {folder} has {exists:,} messages.")
             return [], exists
-        start, end = _sequence_window(exists, limit, offset)
-        count = end - start + 1
+        start, end = _recent_span(exists, limit, offset)
+        shown = min(limit, max(0, exists - offset))
         if offset:
-            _status(f"Fetching {count:,} of {exists:,}, starting after the newest {offset:,}...")
+            _status(f"Fetching {shown:,} of {exists:,}, starting after the newest {offset:,}...")
         else:
-            _status(f"Fetching newest {count:,} of {exists:,}...")
+            _status(f"Fetching newest {shown:,} of {exists:,}...")
         pairs = _sequence_fetch(imap, f"{start}:{end}", HEADER_ITEMS)
-        return _summaries_from_pairs(pairs, index_base=1), exists
+        ordered = _summaries_from_pairs(pairs, index_base=1)
+        page = ordered[offset : offset + limit]
+        for position, item in enumerate(page, 1):
+            item.index = position
+        return page, exists
 
     def read(
         self,
@@ -170,11 +197,43 @@ class ImapSession:
         summary.unread = False
         return summary, parsed, exists
 
+    def read_uid(self, folder: str, uid: str, *, index: int, exists: int) -> tuple[Summary, ParsedMessage, int]:
+        """Fetch one message by UID. The row number comes from the saved listing."""
+        self.ensure()
+        imap = self._require()
+        _select(imap, folder)
+        _status(f"Fetching message {index}...")
+        pairs = _uid_fetch(imap, uid, "(UID FLAGS BODY.PEEK[])")
+        raw = b""
+        for _meta, literal in pairs:
+            if literal:
+                raw = literal
+                break
+        if not raw:
+            raise MailcliError(f"The server returned no body for message {index}.")
+        parsed = parse_message(raw)
+        try:
+            imap.uid("STORE", uid, "+FLAGS", "(\\Seen)")
+        except imaplib.IMAP4.error as exc:
+            raise _imap_error(exc, self.settings) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise _timeout(self.settings) from exc
+        summary = Summary(
+            index=index,
+            uid=uid,
+            when=parsed.date,
+            sender=parsed.sender,
+            subject=parsed.subject,
+            unread=False,
+        )
+        return summary, parsed, exists
+
     def search(self, folder: str, text: str, *, limit: int = DEFAULT_LIMIT) -> tuple[list[Summary], int]:
         """Server-side search. Only the capped hits are fetched, not the folder."""
         query = text.strip()
         if not query:
             raise MailcliError("Give the words to search for.")
+        self.ensure()
         limit, _offset = _bounds(limit, 0)
         imap = self._require()
         exists = _select(imap, folder)
@@ -185,13 +244,7 @@ class ImapSession:
         chosen = sorted(uids, key=int, reverse=True)[:limit]
         _status(f"Fetching {len(chosen):,} of {len(uids):,} search hits...")
         pairs = _uid_fetch(imap, ",".join(chosen), HEADER_ITEMS)
-        summaries = _summaries_from_pairs(pairs, index_base=0)
-        for summary in summaries:
-            sequence = summary.index
-            if sequence and exists:
-                summary.index = exists - sequence + 1
-        summaries.sort(key=lambda item: item.index)
-        return summaries, exists
+        return _summaries_from_pairs(pairs, index_base=1), exists
 
 
 def verify_login(settings: Settings) -> None:
@@ -331,6 +384,19 @@ def _bounds(limit: int, offset: int) -> tuple[int, int]:
 def _sequence_window(exists: int, limit: int, offset: int) -> tuple[int, int]:
     end = exists - offset
     start = max(1, end - limit + 1)
+    return start, end
+
+
+def _recent_span(exists: int, limit: int, offset: int) -> tuple[int, int]:
+    """Arrival-order slice a bit larger than the page, so date sorting has room.
+
+    Gmail does not implement IMAP SORT, so the extra messages are ordered on
+    the client. The slice stays at the recent end of the folder.
+    """
+    extra = min(limit, 30)
+    span = min(exists, offset + limit + extra)
+    end = exists
+    start = max(1, end - span + 1)
     return start, end
 
 

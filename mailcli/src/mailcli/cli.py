@@ -10,6 +10,7 @@ from mailcli import __version__
 from mailcli.config import Settings, default_config_path, list_account_names, load_settings
 from mailcli.errors import MailcliError
 from mailcli.imap_client import DEFAULT_LIMIT, ImapSession, verify_login
+from mailcli.listing import Listing, load_listing, save_listing, same_account
 from mailcli.interactive import run_interactive
 from mailcli.render import Row, render_message, render_table
 from mailcli.smtp_client import send_message
@@ -35,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "accounts":
             return _cmd_accounts(args)
         _offer_setup(args)
-        if args.command is None:
+        if args.command in (None, "shell"):
             settings = _settings(args, folder=None)
             plain = _plain(args)
             return run_interactive(settings, plain=plain)
@@ -47,8 +48,7 @@ def main(argv: list[str] | None = None) -> int:
             limit, offset = _window(args)
             _cmd_inbox(settings, limit=limit, offset=offset, plain=plain)
         elif args.command == "read":
-            limit, offset = _window(args)
-            _cmd_read(settings, args.number, limit=limit, offset=offset)
+            _cmd_read(settings, args)
         elif args.command == "send":
             _cmd_send(settings, args)
         elif args.command == "folders":
@@ -116,15 +116,16 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("accounts", help="list saved accounts")
+    sub.add_parser("shell", help="open the interactive prompt and keep the connection")
     sub.add_parser("test-login", help="log in with the saved account and report the server's answer")
 
     inbox = sub.add_parser("inbox", help="list the newest messages")
     _add_window(inbox)
     inbox.add_argument("--folder", help="folder to list")
 
-    read = sub.add_parser("read", help="show one message by its row number in the same window as inbox")
-    read.add_argument("number", type=int, help="row number from inbox (1 is the newest in this window)")
-    _add_window(read)
+    read = sub.add_parser("read", help="show one message by its row number in the last listing")
+    read.add_argument("number", type=int, help="row number from the last inbox or search")
+    _add_window(read, remembered=True)
     read.add_argument("--folder", help="folder to read from")
 
     send = sub.add_parser("send", help="send a message through SMTP")
@@ -142,7 +143,12 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_window(parser: argparse.ArgumentParser) -> None:
+def _add_window(parser: argparse.ArgumentParser, *, remembered: bool = False) -> None:
+    if remembered:
+        parser.add_argument("--limit", type=int, default=None, help="fetch a new window of this size instead of the last listing")
+        parser.add_argument("--page", type=int, default=None, help="page of a new window, starting at 1")
+        parser.add_argument("--offset", type=int, default=None, help="skip this many newest messages in a new window")
+        return
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="how many messages to fetch (default 20)")
     parser.add_argument("--page", type=int, default=1, help="page of results, starting at 1")
     parser.add_argument("--offset", type=int, default=None, help="skip this many newest messages")
@@ -209,6 +215,7 @@ def _cmd_test_login(settings: Settings) -> None:
 
 def _cmd_inbox(settings: Settings, *, limit: int, offset: int, plain: bool) -> None:
     shown, exists = _load(settings, limit=limit, offset=offset)
+    _remember(settings, shown, exists, limit=limit, offset=offset, mode="inbox", query="")
     if exists > len(shown):
         title = f"{settings.folder}  showing {len(shown)} of {exists:,}  newest first"
     else:
@@ -225,7 +232,31 @@ def _cmd_inbox(settings: Settings, *, limit: int, offset: int, plain: bool) -> N
     )
 
 
-def _cmd_read(settings: Settings, number: int, *, limit: int, offset: int) -> None:
+def _cmd_read(settings: Settings, args: argparse.Namespace) -> None:
+    number = args.number
+    explicit = args.limit is not None or args.page is not None or args.offset is not None
+    cached = None if explicit else load_listing()
+    if (
+        cached is not None
+        and same_account(cached, settings.account, settings.folder)
+        and cached.uids
+    ):
+        if number < 1 or number > len(cached.uids):
+            raise MailcliError(
+                f"No message {number} in the last listing ({len(cached.uids)} rows). "
+                "Run inbox again or pass --limit to choose a different window."
+            )
+        with ImapSession(settings) as session:
+            summary, parsed, total = session.read_uid(
+                settings.folder,
+                cached.uids[number - 1],
+                index=number,
+                exists=cached.exists,
+            )
+        title = f"Message {number} of {total:,}  {settings.folder}"
+        print(render_message(title, parsed), end="")
+        return
+    limit, offset = _window(args, fallback=True)
     with ImapSession(settings) as session:
         summary, parsed, total = session.read(settings.folder, number, limit=limit, offset=offset)
     title = f"Message {summary.index} of {total:,}  {settings.folder}"
@@ -253,7 +284,8 @@ def _cmd_folders(settings: Settings) -> None:
 
 def _cmd_search(settings: Settings, text: str, *, limit: int, plain: bool) -> None:
     with ImapSession(settings) as session:
-        found, _exists = session.search(settings.folder, text, limit=limit)
+        found, exists = session.search(settings.folder, text, limit=limit)
+    _remember(settings, found, exists, limit=limit, offset=0, mode="search", query=text)
     title = (
         f'Search "{text}" in {settings.folder}  {len(found)} match'
         + ("es" if len(found) != 1 else "")
@@ -274,18 +306,33 @@ def _load(settings: Settings, *, limit: int, offset: int):
         return session.summaries(settings.folder, limit=limit, offset=offset)
 
 
-def _window(args: argparse.Namespace) -> tuple[int, int]:
-    limit = args.limit
-    if limit <= 0:
+def _window(args: argparse.Namespace, *, fallback: bool = False) -> tuple[int, int]:
+    limit = args.limit if args.limit is not None else (DEFAULT_LIMIT if fallback else args.limit)
+    if limit is None or limit <= 0:
         raise MailcliError("--limit must be a positive number.")
     if args.offset is not None:
         if args.offset < 0:
             raise MailcliError("--offset cannot be negative.")
         return limit, args.offset
-    page = args.page
-    if page < 1:
+    page = args.page if args.page is not None else (1 if fallback else args.page)
+    if page is None or page < 1:
         raise MailcliError("--page starts at 1.")
     return limit, (page - 1) * limit
+
+
+def _remember(settings: Settings, rows, exists: int, *, limit: int, offset: int, mode: str, query: str) -> None:
+    save_listing(
+        Listing(
+            account=settings.account,
+            folder=settings.folder,
+            limit=limit,
+            offset=offset,
+            mode=mode,
+            query=query,
+            exists=exists,
+            uids=[item.uid for item in rows],
+        )
+    )
 
 
 def _as_row(item) -> Row:
