@@ -1,3 +1,3 @@
 # pen
 
-- [mailcli](mailcli/README.md) — original terminal email client for Proton Mail Bridge (IMAP/SMTP)
+- [mailcli](mailcli/README.md) — original terminal email client (Gmail, Outlook, Yahoo, iCloud, and custom IMAP/SMTP)

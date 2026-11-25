@@ -1,27 +1,38 @@
-# mailcli configuration
+# mailcli accounts. Copy this file to:
+#   Windows: %APPDATA%\mailcli\config
+#   Linux:   ~/.config/mailcli/config
 #
-# Copy this file to:
-#   Windows PowerShell:  $env:APPDATA\mailcli\config
-#   Linux and macOS:     ~/.config/mailcli/config
-#
-# Do not put a password in this file. mailcli refuses to start if it finds
-# one. Set MAILCLI_PASSWORD in the environment, or run mailcli from a
-# terminal and type the password when prompted.
+# Do not put a password or token here. setup stores those in the OS
+# credential store (Windows Credential Manager). MAILCLI_PASSWORD overrides
+# a stored password for one command and is never written down.
 
-host = "127.0.0.1"
-imap_port = 1143
-smtp_port = 1025
-user = "you@example.com"
+default_account = "home"
 
-# starttls is what Proton Mail Bridge expects. Use ssl for implicit TLS.
-# security = "starttls"
-
-# Proton Mail Bridge presents a certificate it generated itself.
-# tls_verify = false is honored only when host is 127.0.0.1, localhost, or ::1.
-tls_verify = false
-
-# Prefer pinning the certificate exported from Bridge, and keep verification on:
-# tls_cert = "C:\\Users\\you\\AppData\\Roaming\\mailcli\\bridge.pem"
-# tls_verify = true
-
+[accounts.home]
+provider = "gmail"
+user = "you@gmail.com"
+imap_host = "imap.gmail.com"
+imap_port = 993
+imap_security = "ssl"
+smtp_host = "smtp.gmail.com"
+smtp_port = 465
+smtp_security = "ssl"
+auth = "password"
 folder = "INBOX"
+tls_verify = true
+
+# A second account, selected with: mailcli --account work inbox
+# [accounts.work]
+# provider = "outlook"
+# user = "you@outlook.com"
+# imap_host = "outlook.office365.com"
+# imap_port = 993
+# imap_security = "ssl"
+# smtp_host = "smtp-mail.outlook.com"
+# smtp_port = 587
+# smtp_security = "starttls"
+# auth = "xoauth2"
+# oauth_client_id = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
+# oauth_tenant = "consumers"
+# folder = "INBOX"
+# tls_verify = true

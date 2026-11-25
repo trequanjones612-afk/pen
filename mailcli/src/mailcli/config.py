@@ -1,7 +1,8 @@
 """Load mailcli settings from a TOML or INI file plus the environment.
 
-The password is never read from the file. ``MAILCLI_PASSWORD`` supplies it,
-and an interactive terminal is prompted with getpass when the variable is unset.
+The password is never read from the file. ``MAILCLI_PASSWORD`` overrides the
+OS credential store. An interactive terminal is prompted with getpass when
+neither one is set.
 """
 
 from __future__ import annotations
@@ -22,17 +23,25 @@ _PASSWORD_KEY = re.compile(r"(?im)^\s*(password|passwd|pass)\s*=")
 class Settings:
     """Connection settings. ``password`` is kept only in memory."""
 
+    account: str = "default"
+    provider: str = "custom"
     host: str = "127.0.0.1"
     imap_port: int = 1143
+    smtp_host: str = ""
     smtp_port: int = 1025
+    smtp_security: str = ""
     user: str = ""
     tls_verify: bool = True
     tls_cert: str | None = None
     folder: str = "INBOX"
     timeout: float = 30.0
     security: str = "starttls"
+    auth: str = "password"
+    oauth_client_id: str = ""
+    oauth_tenant: str = ""
     insecure_localhost: bool = False
     password: str = ""
+    access_token: str = ""
     config_path: Path | None = None
 
 
@@ -75,6 +84,7 @@ def default_config_path() -> Path:
 def load_settings(
     *,
     config_path: str | None = None,
+    account: str | None = None,
     host: str | None = None,
     imap_port: int | None = None,
     smtp_port: int | None = None,
@@ -100,6 +110,7 @@ def load_settings(
         values = _read_config_file(path)
 
     settings = Settings(config_path=path if path.is_file() else None)
+    values = _select_account(values, account, settings)
     _apply_mapping(settings, values)
 
     env_host = os.environ.get("MAILCLI_HOST")
@@ -147,38 +158,57 @@ def load_settings(
         else:
             settings.tls_cert = str(cert_path)
 
+    if not settings.smtp_host:
+        settings.smtp_host = settings.host
+    if not settings.smtp_security:
+        settings.smtp_security = settings.security
+
     if not settings.user:
         where = path if config_path or path.is_file() else config_directory() / "config"
         raise MailcliError(
-            "No mail account is configured. Set user in the config file "
-            f"({where}), or pass --user. The example file is config.example "
-            "in the mailcli directory."
+            "No mail account is configured. Run python -m mailcli setup, "
+            f"or set user in {where}."
         )
     if not settings.host:
         raise MailcliError("The mail host is empty.")
 
-    settings.password = password if password is not None else read_password()
+    if password is not None:
+        settings.password = password
+    elif settings.auth == "xoauth2":
+        from mailcli.oauth_session import obtain_access_token
+
+        settings.access_token = obtain_access_token(settings)
+    else:
+        settings.password = read_password(settings.account)
     return settings
 
 
-def read_password() -> str:
-    """Return the mailbox password from the environment or a hidden prompt.
+def read_password(account: str = "default") -> str:
+    """Return the mailbox password from the environment, keyring, or a prompt.
 
-    Nothing is written to disk. A non-interactive run with no environment
-    variable fails instead of blocking.
+    Nothing is written to the config file. A non-interactive run with no
+    environment variable and no stored password fails instead of blocking.
     """
     value = os.environ.get("MAILCLI_PASSWORD")
-    if value is None:
-        if not sys.stdin.isatty():
-            raise MailcliError(
-                "MAILCLI_PASSWORD is not set. Export your Proton Mail Bridge "
-                "password in the environment. mailcli will prompt with getpass "
-                "when it is run from an interactive terminal."
-            )
-        value = getpass("Bridge password: ")
-    if value == "":
-        raise MailcliError("MAILCLI_PASSWORD is empty.")
-    return value
+    if value is not None:
+        if value == "":
+            raise MailcliError("MAILCLI_PASSWORD is empty.")
+        return value
+    from mailcli.secrets import get_secret
+
+    stored = get_secret(account, "password")
+    if stored:
+        return stored
+    if not sys.stdin.isatty():
+        raise MailcliError(
+            "MAILCLI_PASSWORD is not set and this account has no password in "
+            "the OS credential store. Run python -m mailcli setup from a "
+            "terminal, or set MAILCLI_PASSWORD for this command."
+        )
+    prompted = getpass("Password or app password: ")
+    if prompted == "":
+        raise MailcliError("The password was empty.")
+    return prompted
 
 
 def _read_config_file(path: Path) -> dict[str, object]:
@@ -201,18 +231,102 @@ def _read_config_file(path: Path) -> dict[str, object]:
         raise MailcliError(f"Could not parse {path}: {exc}") from exc
 
 
-def _parse_config(text: str) -> dict[str, object]:
-    """Parse a flat TOML document or an INI file into a string-keyed mapping.
+def read_document(path: Path) -> dict[str, object]:
+    """Parse a config file. Account tables stay nested under ``accounts``."""
+    return _read_config_file(path)
 
-    Python 3.9 has no tomllib, so a small reader covers the subset mailcli
-    writes: comments, one optional table, strings, booleans, and integers.
+
+def write_document(path: Path, accounts: dict[str, dict[str, object]], default_account: str) -> None:
+    """Rewrite the config. Password and token keys are skipped."""
+    secret_keys = {"password", "passwd", "pass", "refresh_token", "access_token", "token"}
+    lines = [
+        "# mailcli accounts. Secrets live in the OS credential store.",
+        f'default_account = "{_escape(default_account)}"',
+        "",
+    ]
+    for name in accounts:
+        lines.append(f"[accounts.{name}]")
+        for key, value in accounts[name].items():
+            if key.startswith("_") or key.lower() in secret_keys:
+                continue
+            if value == "":
+                continue
+            lines.append(f"{key} = {_format_value(value)}")
+        lines.append("")
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def list_account_names(path: Path | None = None) -> tuple[list[str], str]:
+    """Return account names and the default name. A legacy file has one name."""
+    target = path or default_config_path()
+    if not target.is_file():
+        return [], ""
+    document = read_document(target)
+    accounts = document.get("accounts")
+    default_name = str(document.get("default_account") or "")
+    if isinstance(accounts, dict) and accounts:
+        names = list(accounts)
+        if not default_name and len(names) == 1:
+            default_name = names[0]
+        return names, default_name
+    if document.get("user"):
+        return ["default"], "default"
+    return [], default_name
+
+
+def _select_account(values: dict[str, object], account: str | None, settings: Settings) -> dict[str, object]:
+    accounts = values.get("accounts")
+    default_name = str(values.get("default_account") or "")
+    flat = {key: item for key, item in values.items() if key not in {"accounts", "default_account"}}
+    if not isinstance(accounts, dict) or not accounts:
+        settings.account = account or "default"
+        return flat
+    name = account or default_name
+    if not name:
+        if len(accounts) == 1:
+            name = next(iter(accounts))
+        else:
+            raise MailcliError(
+                "Several accounts are configured. Pass --account with one of: "
+                + ", ".join(str(item) for item in accounts)
+            )
+    selected = accounts.get(name)
+    if not isinstance(selected, dict):
+        known = ", ".join(str(item) for item in accounts)
+        raise MailcliError(f"No account named {name}. Configured accounts: {known}")
+    settings.account = str(name)
+    merged = dict(flat)
+    merged.update(selected)
+    if "imap_host" in merged:
+        merged["host"] = merged.pop("imap_host")
+    if "imap_security" in merged:
+        merged["security"] = merged.pop("imap_security")
+    return merged
+
+
+def _parse_config(text: str) -> dict[str, object]:
+    """Parse TOML or INI, including ``[accounts.name]`` tables.
+
+    Python 3.9 has no tomllib, so a small reader covers comments, account
+    tables, strings, booleans, and integers.
     """
     values: dict[str, object] = {}
+    accounts: dict[str, dict[str, object]] = {}
+    current: dict[str, object] | None = None
     for line_no, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith(";"):
             continue
         if line.startswith("[") and line.endswith("]"):
+            header = line[1:-1].strip()
+            lowered = header.lower()
+            if lowered.startswith("accounts."):
+                name = header.split(".", 1)[1].strip()
+                if not name:
+                    raise MailcliError(f"Config line {line_no} has an empty account name")
+                current = accounts.setdefault(name, {})
+            else:
+                current = None
             continue
         if "=" not in line:
             raise MailcliError(f"Config line {line_no} is not key = value")
@@ -220,8 +334,26 @@ def _parse_config(text: str) -> dict[str, object]:
         key = key.strip().lower().replace("-", "_")
         if not key:
             raise MailcliError(f"Config line {line_no} is missing a key")
-        values[key] = _parse_value(raw_value.strip(), line_no)
+        parsed = _parse_value(raw_value.strip(), line_no)
+        if current is None:
+            values[key] = parsed
+        else:
+            current[key] = parsed
+    if accounts:
+        values["accounts"] = accounts
     return values
+
+
+def _format_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    return f'"{_escape(str(value))}"'
+
+
+def _escape(text: str) -> str:
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _parse_value(raw: str, line_no: int) -> object:
@@ -271,6 +403,12 @@ def _apply_mapping(settings: Settings, values: dict[str, object]) -> None:
         "folder",
         "timeout",
         "security",
+        "smtp_host",
+        "smtp_security",
+        "auth",
+        "provider",
+        "oauth_client_id",
+        "oauth_tenant",
     }
     unknown = sorted(set(values) - known)
     if unknown:
@@ -299,6 +437,18 @@ def _apply_mapping(settings: Settings, values: dict[str, object]) -> None:
         settings.folder = str(values["folder"]).strip() or "INBOX"
     if "security" in values:
         settings.security = _security(values["security"])
+    if "smtp_host" in values:
+        settings.smtp_host = str(values["smtp_host"]).strip()
+    if "smtp_security" in values:
+        settings.smtp_security = _security(values["smtp_security"])
+    if "auth" in values:
+        settings.auth = _auth(values["auth"])
+    if "provider" in values:
+        settings.provider = str(values["provider"]).strip().lower() or "custom"
+    if "oauth_client_id" in values:
+        settings.oauth_client_id = str(values["oauth_client_id"]).strip()
+    if "oauth_tenant" in values:
+        settings.oauth_tenant = str(values["oauth_tenant"]).strip()
     if "timeout" in values:
         try:
             settings.timeout = float(values["timeout"])
@@ -323,6 +473,13 @@ def _security(value: object) -> str:
     if text in {"starttls", "ssl"}:
         return text
     raise MailcliError("security must be starttls or ssl")
+
+
+def _auth(value: object) -> str:
+    text = str(value).strip().lower()
+    if text in {"password", "xoauth2"}:
+        return text
+    raise MailcliError("auth must be password or xoauth2")
 
 
 def _bool_value(value: object, label: str) -> bool:

@@ -96,6 +96,7 @@ class _Service(socketserver.ThreadingTCPServer):
         self.keyfile = str(keyfile)
         self.user = user
         self.password = password
+        self.access_token = ""
 
 
 class RunningServer:
@@ -237,7 +238,7 @@ class _ImapHandler(socketserver.BaseRequestHandler):
                 tag, command = tokens[0], tokens[1].upper()
                 args = tokens[2:]
                 if command == "CAPABILITY":
-                    caps = "IMAP4rev1 AUTH=PLAIN"
+                    caps = "IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2"
                     if not tls:
                         caps += " STARTTLS"
                     conn.sendline(f"* CAPABILITY {caps}")
@@ -258,6 +259,22 @@ class _ImapHandler(socketserver.BaseRequestHandler):
                     password = args[1] if len(args) > 1 else ""
                     if _secret_equal(user, self.server.user) and _secret_equal(password, self.server.password):
                         conn.sendline(f"{tag} OK LOGIN completed")
+                    else:
+                        conn.sendline(f"{tag} NO [AUTHENTICATIONFAILED] Authentication failed")
+                elif command == "AUTHENTICATE":
+                    if not tls:
+                        conn.sendline(f"{tag} NO STARTTLS required")
+                        continue
+                    mechanism = (args[0] if args else "").upper()
+                    if mechanism != "XOAUTH2":
+                        conn.sendline(f"{tag} NO unsupported mechanism")
+                        continue
+                    conn.sendline("+")
+                    blob = conn.readline()
+                    if blob is None:
+                        return
+                    if _xoauth_matches(blob.decode("ascii", "replace"), self.server):
+                        conn.sendline(f"{tag} OK AUTHENTICATE completed")
                     else:
                         conn.sendline(f"{tag} NO [AUTHENTICATIONFAILED] Authentication failed")
                 elif command == "LIST":
@@ -321,7 +338,7 @@ class _SmtpHandler(socketserver.BaseRequestHandler):
                     conn.sendline("250-localhost")
                     if not tls:
                         conn.sendline("250-STARTTLS")
-                    conn.sendline("250 AUTH PLAIN LOGIN")
+                    conn.sendline("250 AUTH XOAUTH2 PLAIN LOGIN")
                 elif upper.startswith("STARTTLS"):
                     if tls:
                         conn.sendline("454 TLS already active")
@@ -536,6 +553,18 @@ def _header_block(raw: bytes, fields: list[str]) -> bytes:
 def _smtp_auth(conn: _Buffered, server: _Service, text: str) -> bool:
     parts = text.split(" ")
     mechanism = parts[1].upper() if len(parts) > 1 else ""
+    if mechanism == "XOAUTH2":
+        if len(parts) < 3:
+            conn.sendline("334 ")
+            extra = conn.readline()
+            blob = extra.decode("ascii", "replace") if extra else ""
+        else:
+            blob = parts[2]
+        if _xoauth_matches(blob, server):
+            conn.sendline("235 Authentication successful")
+            return True
+        conn.sendline("535 Authentication failed")
+        return False
     if mechanism == "PLAIN":
         if len(parts) >= 3:
             blob = parts[2]
@@ -564,6 +593,23 @@ def _smtp_auth(conn: _Buffered, server: _Service, text: str) -> bool:
         return False
     conn.sendline("504 Unrecognized authentication type")
     return False
+
+
+def _xoauth_matches(blob: str, server: _Service) -> bool:
+    if not server.access_token:
+        return False
+    try:
+        decoded = base64.b64decode(blob).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    user = ""
+    token = ""
+    for part in decoded.split("\x01"):
+        if part.startswith("user="):
+            user = part[5:]
+        elif part.lower().startswith("auth=bearer "):
+            token = part.split(" ", 1)[1]
+    return _secret_equal(user, server.user) and _secret_equal(token, server.access_token)
 
 
 def _check_plain(conn: _Buffered, server: _Service, blob: str) -> bool:
