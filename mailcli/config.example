@@ -1,0 +1,27 @@
+# mailcli configuration
+#
+# Copy this file to:
+#   Windows PowerShell:  $env:APPDATA\mailcli\config
+#   Linux and macOS:     ~/.config/mailcli/config
+#
+# Do not put a password in this file. mailcli refuses to start if it finds
+# one. Set MAILCLI_PASSWORD in the environment, or run mailcli from a
+# terminal and type the password when prompted.
+
+host = "127.0.0.1"
+imap_port = 1143
+smtp_port = 1025
+user = "you@example.com"
+
+# starttls is what Proton Mail Bridge expects. Use ssl for implicit TLS.
+# security = "starttls"
+
+# Proton Mail Bridge presents a certificate it generated itself.
+# tls_verify = false is honored only when host is 127.0.0.1, localhost, or ::1.
+tls_verify = false
+
+# Prefer pinning the certificate exported from Bridge, and keep verification on:
+# tls_cert = "C:\\Users\\you\\AppData\\Roaming\\mailcli\\bridge.pem"
+# tls_verify = true
+
+folder = "INBOX"

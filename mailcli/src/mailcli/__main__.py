@@ -1,0 +1,6 @@
+"""Allow ``python -m mailcli``."""
+
+from mailcli.cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main())

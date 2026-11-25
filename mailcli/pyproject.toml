@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mailcli"
+version = "0.1.0"
+description = "Original terminal email client for Proton Mail Bridge"
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["email", "imap", "smtp", "protonmail", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Email",
+]
+
+[project.optional-dependencies]
+rich = ["rich>=13.7"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+mailcli = "mailcli.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
