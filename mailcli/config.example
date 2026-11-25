@@ -20,6 +20,7 @@ smtp_security = "ssl"
 auth = "password"
 folder = "INBOX"
 tls_verify = true
+# pager = false   # print a long message all at once instead of pausing
 
 # A second account, selected with: mailcli --account work inbox
 # [accounts.work]

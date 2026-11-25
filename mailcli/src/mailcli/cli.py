@@ -12,6 +12,8 @@ from mailcli.errors import MailcliError
 from mailcli.imap_client import DEFAULT_LIMIT, ImapSession, verify_login
 from mailcli.listing import Listing, load_listing, save_listing, same_account
 from mailcli.interactive import run_interactive
+from mailcli.mimeutil import format_links
+from mailcli.pager import display
 from mailcli.render import Row, render_message, render_table
 from mailcli.smtp_client import send_message
 
@@ -127,6 +129,9 @@ def _parser() -> argparse.ArgumentParser:
     read.add_argument("number", type=int, help="row number from the last inbox or search")
     _add_window(read, remembered=True)
     read.add_argument("--folder", help="folder to read from")
+    read.add_argument("--html", action="store_true", help="show the HTML part even when a text part exists")
+    read.add_argument("--links", action="store_true", help="also print the numbered links")
+    read.add_argument("--full", action="store_true", help="with --links, do not shorten long URLs")
 
     send = sub.add_parser("send", help="send a message through SMTP")
     send.add_argument("--to", action="append", required=True, help="recipient; repeat for several")
@@ -252,15 +257,23 @@ def _cmd_read(settings: Settings, args: argparse.Namespace) -> None:
                 cached.uids[number - 1],
                 index=number,
                 exists=cached.exists,
+                prefer_html=args.html,
             )
-        title = f"Message {number} of {total:,}  {settings.folder}"
-        print(render_message(title, parsed), end="")
+        _show_message(settings, f"Message {number} of {total:,}  {settings.folder}", parsed, args)
         return
     limit, offset = _window(args, fallback=True)
     with ImapSession(settings) as session:
-        summary, parsed, total = session.read(settings.folder, number, limit=limit, offset=offset)
-    title = f"Message {summary.index} of {total:,}  {settings.folder}"
-    print(render_message(title, parsed), end="")
+        summary, parsed, total = session.read(
+            settings.folder, number, limit=limit, offset=offset, prefer_html=args.html
+        )
+    _show_message(settings, f"Message {summary.index} of {total:,}  {settings.folder}", parsed, args)
+
+
+def _show_message(settings: Settings, title: str, parsed, args: argparse.Namespace) -> None:
+    text = render_message(title, parsed)
+    if args.links:
+        text += "\n" + format_links(parsed.links, full=args.full) + "\n"
+    display(text, enabled=settings.pager)
 
 
 def _cmd_send(settings: Settings, args: argparse.Namespace) -> None:
