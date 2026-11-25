@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from email import policy
+from html.parser import HTMLParser
 from email.header import decode_header, make_header
 from email.message import EmailMessage, Message
 from email.parser import BytesParser
@@ -36,6 +37,7 @@ class ParsedMessage:
     date_raw: str
     date: datetime | None
     body: str
+    html: str
     attachments: list[Attachment]
     html_only: bool
 
@@ -76,6 +78,7 @@ def parse_message(raw: bytes) -> ParsedMessage:
     date_raw = decode_words(message.get("Date"))
     plain, html, attachments = _walk(message)
     html_only = not plain and bool(html)
+    html_source = "\n".join(part for part in html if part.strip())
     if plain:
         body = "\n\n".join(part.strip() for part in plain if part.strip())
     elif html:
@@ -90,6 +93,7 @@ def parse_message(raw: bytes) -> ParsedMessage:
         date_raw=date_raw,
         date=parse_date(message.get("Date")),
         body=body,
+        html=html_source,
         attachments=attachments,
         html_only=html_only,
     )
@@ -106,25 +110,71 @@ def header_bytes(raw: bytes) -> bytes:
     return raw[: separator + 4]
 
 
+class _HTMLText(HTMLParser):
+    """Turn HTML into text and remember links. Script and style are skipped."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.links: list[str] = []
+        self._skip = 0
+        self._href: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        name = tag.lower()
+        if name in {"script", "style"}:
+            self._skip += 1
+            return
+        if name == "br":
+            self.parts.append("\n")
+        elif name in {"p", "div", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "li"}:
+            self.parts.append("\n")
+        if name == "li":
+            self.parts.append("- ")
+        if name == "a":
+            self._href = dict(attrs).get("href")
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name in {"script", "style"} and self._skip:
+            self._skip -= 1
+            return
+        if name == "a" and self._href:
+            link = self._href.strip()
+            if link and link not in self.links:
+                self.links.append(link)
+            self._href = None
+        if name == "p":
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip or not data:
+            return
+        self.parts.append(data)
+
+
 def html_to_text(html: str) -> str:
-    """Turn a simple HTML part into readable text. This is not a browser."""
-    text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "", html)
-    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</p\s*>", "\n\n", text)
-    text = re.sub(r"(?i)</(div|tr|h[1-6]|li)\s*>", "\n", text)
-    text = re.sub(r"(?i)<li\b[^>]*>", "- ", text)
-    text = re.sub(r"(?s)<[^>]+>", "", text)
-    text = (
-        text.replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", '"')
-        .replace("&#39;", "'")
-    )
+    """Turn an HTML part into readable text and list links at the end."""
+    parser = _HTMLText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        return _html_fallback(html)
+    text = "".join(parser.parts)
     text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if parser.links:
+        lines = ["", "Links:"]
+        lines.extend(f"  {index}. {link}" for index, link in enumerate(parser.links, 1))
+        text = (text + "\n" + "\n".join(lines)).strip()
+    return text
+
+
+def _html_fallback(html: str) -> str:
+    text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "", html)
+    text = re.sub(r"(?s)<[^>]+>", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def format_size(size: int) -> str:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 
 from mailcli.mimeutil import Attachment, ParsedMessage, format_size
 
@@ -27,10 +27,12 @@ class Row:
 
 
 def format_when(when: datetime | None) -> str:
-    """Format a message timestamp as ``YYYY-MM-DD HH:MM`` in its own offset."""
+    """Format a message timestamp as ``YYYY-MM-DD HH:MM`` in local time."""
     if when is None:
         return ""
-    return when.strftime("%Y-%m-%d %H:%M")
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def render_table(

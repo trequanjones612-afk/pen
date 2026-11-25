@@ -40,6 +40,7 @@ class Mailbox:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     virtual_count: dict[str, int] = field(default_factory=dict)
     fetched: int = 0
+    login_count: int = 0
     fetch_sets: list[str] = field(default_factory=list)
     last_search: str = ""
     gmail: bool = False
@@ -298,6 +299,7 @@ class _ImapHandler(socketserver.BaseRequestHandler):
                     user = args[0] if args else ""
                     password = args[1] if len(args) > 1 else ""
                     if _secret_equal(user, self.server.user) and _secret_equal(password, self.server.password):
+                        self.server.mailbox.login_count += 1
                         conn.sendline(f"{tag} OK LOGIN completed")
                     else:
                         failure = self.server.mailbox.auth_failure or "NO [AUTHENTICATIONFAILED] Authentication failed"

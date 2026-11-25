@@ -94,6 +94,30 @@ Proton Mail does not offer IMAP or SMTP for a normal login. Bridge is the offici
 
 Any other IMAP and SMTP server. `tls_verify = false` is refused unless the host is `127.0.0.1`, `localhost`, or `::1`. A PEM file in `tls_cert` stays verified.
 
+## Shell
+
+The usual way to read mail is the shell. It logs in once and keeps the connection open.
+
+```powershell
+python -m mailcli
+python -m mailcli shell
+```
+
+```text
+mailcli 0.2.0. Type help, or a command. Ctrl+D quits.
+mailcli [home INBOX]> inbox
+mailcli [home INBOX]> read 1
+mailcli [home INBOX]> search invoice
+mailcli [home INBOX]> 1
+mailcli [home INBOX]> next
+mailcli [home INBOX]> compose
+mailcli [home INBOX]> quit
+```
+
+`inbox 100` lists 100 rows. `next` and `prev` turn the page. A bare number opens that row of the list on screen. After `search`, the number refers to the search results. `compose` and `reply 3` ask you to confirm before anything is sent. `open 3` writes the HTML part to a temporary file and opens it in the browser. On Windows, `pyreadline3` adds arrow-key history and Tab completion when it is installed (`pip install pyreadline3`); without it the same commands still work.
+
+`inbox --limit 100` followed by `read 71` uses the row you just saw. The row number is saved as a UID under `%LOCALAPPDATA%\mailcli` (or `%APPDATA%\mailcli` if local app data is unset), not as an IMAP sequence number.
+
 ## Commands
 
 ```powershell
@@ -108,25 +132,11 @@ python -m mailcli send --to friend@example.com --subject "Hello" --body "Hi from
 Get-Content .\note.txt | python -m mailcli send --to friend@example.com --subject "Notes"
 ```
 
-`inbox` fetches only the newest messages, 20 by default, even when the folder has tens of thousands. `--page 2` or `--offset 20` moves to the next older slice. `read 1` opens the first row of that same window. `*` in the `U` column means unread. Listing does not mark mail as read. `read` does. `search` asks the server (Gmail's `X-GM-RAW` when the server offers it) and fetches only the capped hits.
+`inbox` fetches only a recent slice, 20 rows by default, even when the folder has tens of thousands. Dates are the Date header, shown in local time, newest first. `--page 2` moves to older mail. `read 71` after `inbox --limit 100` opens row 71 of that listing by UID. `*` in the `U` column means unread. Listing does not mark mail as read. `read` does. `search` asks the server (Gmail's `X-GM-RAW` when the server offers it) and fetches only the capped hits. A later `read` uses those hits.
 
 `python -m mailcli test-login` checks the saved sign-in and prints the server's error if it fails. `setup --verify` does that check before anything is saved.
 
-`read` prints the headers and a plain-text body. Charsets and RFC 2047 encoded words are decoded. An HTML-only message is rendered as text. Attachments are listed and are not written out.
-
-With no subcommand, mailcli opens a prompt loop (no curses):
-
-```text
-1        open that row
-b        back to the list
-n / p    next or previous message
-r        refresh
-s TEXT   search
-f        list folders
-g FOLDER switch folder
-c        compose (end the body with a line that is only a period)
-q        quit
-```
+`read` prints the headers and a plain-text body. Charsets and RFC 2047 encoded words are decoded. An HTML-only message is rendered as text, with links listed at the end. `open` writes that HTML to a temporary file and opens it in the browser. Attachments are listed and are not written out.
 
 ## Tests
 
@@ -140,4 +150,4 @@ py -3 -m pytest
 
 ## Demo
 
-`docs/demo.txt` is a transcript of `setup` choosing Gmail (no real password is stored in the transcript) and of `inbox` / `read` / `send` against a local GreenMail server configured as a custom account. `docs/inbox.png` shows that setup screen and the inbox.
+`docs/demo.txt` is a transcript of the shell against a local GreenMail server: the banner, `inbox`, `read 1`, and `search`. `docs/inbox.png` is that session. No real mailbox is used.

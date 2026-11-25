@@ -39,6 +39,7 @@ def mail_env(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setenv("MAILCLI_PASSWORD", PASSWORD)
+    monkeypatch.setenv("MAILCLI_CACHE_DIR", str(tmp_path / "cache"))
     try:
         yield {
             "config": config,

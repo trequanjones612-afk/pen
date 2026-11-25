@@ -127,7 +127,7 @@ def test_inbox_read_search_and_folders(mail_env, capsys) -> None:
     found = capsys.readouterr().out
     assert "invoice 1842" in found
     assert "Project kickoff" not in found
-    assert "2  " in found
+    assert "\n1 " in found or found.startswith("1 ") or "1  " in found
 
     assert main(["--config", config, "--plain", "search", "café"]) == 0
     cafe = capsys.readouterr().out
@@ -232,8 +232,8 @@ def test_huge_inbox_fetches_only_the_newest_window(mail_env, capsys) -> None:
     config = str(mail_env["config"])
     assert main(["--config", config, "--plain", "inbox"]) == 0
     captured = capsys.readouterr()
-    assert mail_env["mailbox"].fetched == 20
-    assert mail_env["mailbox"].fetch_sets == ["49981:50000"]
+    assert mail_env["mailbox"].fetched == 40
+    assert mail_env["mailbox"].fetch_sets == ["49961:50000"]
     assert "1:*" not in " ".join(mail_env["mailbox"].fetch_sets)
     assert "Fetching newest 20 of 50,000..." in captured.err
     assert "Connecting to 127.0.0.1:" in captured.err
@@ -246,18 +246,22 @@ def test_huge_inbox_fetches_only_the_newest_window(mail_env, capsys) -> None:
     mail_env["mailbox"].fetch_sets.clear()
     assert main(["--config", config, "--plain", "inbox", "--page", "2"]) == 0
     paged = capsys.readouterr()
-    assert mail_env["mailbox"].fetch_sets == ["49961:49980"]
-    assert mail_env["mailbox"].fetched == 20
+    assert mail_env["mailbox"].fetch_sets == ["49941:50000"]
+    assert mail_env["mailbox"].fetched == 60
     assert "Virtual message 49980" in paged.out
     assert "Virtual message 50000" not in paged.out
 
     mail_env["mailbox"].fetched = 0
     mail_env["mailbox"].fetch_sets.clear()
+    assert main(["--config", config, "--plain", "inbox"]) == 0
+    capsys.readouterr()
+    mail_env["mailbox"].fetched = 0
+    mail_env["mailbox"].fetch_sets.clear()
     assert main(["--config", config, "read", "1"]) == 0
     opened = capsys.readouterr().out
     assert "Virtual message 50000" in opened
-    assert mail_env["mailbox"].fetched == 21
-    assert mail_env["mailbox"].fetch_sets[0] == "49981:50000"
+    assert mail_env["mailbox"].fetched == 1
+    assert mail_env["mailbox"].fetch_sets == ["50000"]
 
 
 def test_gmail_search_uses_gm_raw_and_does_not_fetch_the_folder(mail_env, capsys, tmp_path) -> None:
@@ -414,13 +418,56 @@ def test_insecure_flag_on_the_command_line(mail_env, capsys, tmp_path: Path) -> 
     assert "INBOX" in capsys.readouterr().out
 
 
-def test_interactive_open_and_back(mail_env, capsys, monkeypatch) -> None:
-    monkeypatch.setattr(sys, "stdin", StringIO("1\nb\nq\n"))
-    assert main(["--config", str(mail_env["config"]), "--plain"]) == 0
+def test_shell_keeps_one_connection(mail_env, capsys, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO("inbox\n1\nsearch invoice\n1\nquit\n"))
+    assert main(["--config", str(mail_env["config"]), "--plain", "shell"]) == 0
     out = capsys.readouterr().out
+    assert "mailcli" in out
     assert "Project kickoff notes" in out
     assert "harbor telemetry project" in out
     assert "agenda.txt" in out
+    assert "invoice 1842" in out
+    assert mail_env["mailbox"].login_count == 1
+
+
+def test_read_uses_the_saved_uid_map(mail_env, capsys) -> None:
+    mail_env["mailbox"].folders["INBOX"].clear()
+    mail_env["mailbox"].virtual_count["INBOX"] = 150
+    config = str(mail_env["config"])
+    assert main(["--config", config, "--plain", "inbox", "--limit", "100"]) == 0
+    capsys.readouterr()
+    mail_env["mailbox"].fetched = 0
+    mail_env["mailbox"].fetch_sets.clear()
+    assert main(["--config", config, "read", "71"]) == 0
+    opened = capsys.readouterr().out
+    assert "Virtual message 80" in opened
+    assert mail_env["mailbox"].fetched == 1
+    assert mail_env["mailbox"].fetch_sets == ["80"]
+
+
+def test_dates_sort_newest_header_first(mail_env, capsys) -> None:
+    box = mail_env["mailbox"]
+    box.folders["INBOX"].clear()
+    box.virtual_count.pop("INBOX", None)
+    box.add("INBOX", _dated("Arrived first", "Wed, 01 Dec 2026 12:00:00 +0000"))
+    box.add("INBOX", _dated("Arrived second", "Thu, 01 Jan 2026 12:00:00 +0000"))
+    assert main(["--config", str(mail_env["config"]), "--plain", "inbox"]) == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if "Arrived" in line]
+    assert lines[0].startswith("1 ")
+    assert "Arrived first" in lines[0]
+    assert "2026-12-01 12:00" in lines[0]
+    assert "Arrived second" in lines[1]
+
+
+def _dated(subject: str, date: str) -> bytes:
+    return (
+        f"From: Sort Test <sort@example.com>\r\n"
+        f"To: demo@localhost\r\n"
+        f"Subject: {subject}\r\n"
+        f"Date: {date}\r\n"
+        f"\r\n"
+        f"{subject}\r\n"
+    ).encode("ascii")
 
 
 def _row_number(text: str, needle: str) -> str:

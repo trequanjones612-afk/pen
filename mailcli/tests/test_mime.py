@@ -42,6 +42,19 @@ def test_encoded_words_charset_and_attachment() -> None:
     assert "application/pdf" in rendered
 
 
+def test_html_parser_lists_links_and_skips_scripts() -> None:
+    rendered = html_to_text(
+        "<html><style>body{color:red}</style><body>"
+        "<p>See the <a href='https://example.com/notes'>notes</a>.</p>"
+        "<script>alert(1)</script></body></html>"
+    )
+    assert "See the notes" in rendered
+    assert "alert" not in rendered
+    assert "color:red" not in rendered
+    assert "Links:" in rendered
+    assert "1. https://example.com/notes" in rendered
+
+
 def test_html_only_message() -> None:
     raw = (
         b"From: News <news@example.com>\r\n"
