@@ -41,6 +41,7 @@ class Settings:
     oauth_tenant: str = ""
     insecure_localhost: bool = False
     password: str = ""
+    password_source: str = ""
     access_token: str = ""
     config_path: Path | None = None
 
@@ -174,41 +175,42 @@ def load_settings(
 
     if password is not None:
         settings.password = password
+        settings.password_source = "argument"
     elif settings.auth == "xoauth2":
         from mailcli.oauth_session import obtain_access_token
 
         settings.access_token = obtain_access_token(settings)
+        settings.password_source = "oauth"
     else:
-        settings.password = read_password(settings.account)
+        settings.password, settings.password_source = read_password(settings.account)
     return settings
 
 
-def read_password(account: str = "default") -> str:
-    """Return the mailbox password from the environment, keyring, or a prompt.
+def read_password(account: str = "default") -> tuple[str, str]:
+    """Return the password and where it came from: env, store, or prompt.
 
-    Nothing is written to the config file. A non-interactive run with no
-    environment variable and no stored password fails instead of blocking.
+    Nothing is written to the config file. MAILCLI_PASSWORD is mentioned in
+    errors only when that variable is set.
     """
-    value = os.environ.get("MAILCLI_PASSWORD")
-    if value is not None:
+    if "MAILCLI_PASSWORD" in os.environ:
+        value = os.environ.get("MAILCLI_PASSWORD") or ""
         if value == "":
             raise MailcliError("MAILCLI_PASSWORD is empty.")
-        return value
+        return value, "env"
     from mailcli.secrets import get_secret
 
     stored = get_secret(account, "password")
     if stored:
-        return stored
+        return stored, "store"
     if not sys.stdin.isatty():
         raise MailcliError(
-            "MAILCLI_PASSWORD is not set and this account has no password in "
-            "the OS credential store. Run python -m mailcli setup from a "
-            "terminal, or set MAILCLI_PASSWORD for this command."
+            f"No stored password found in the credential store for account {account}. "
+            "Run python -m mailcli setup from a terminal to save one."
         )
     prompted = getpass("Password or app password: ")
     if prompted == "":
         raise MailcliError("The password was empty.")
-    return prompted
+    return prompted, "prompt"
 
 
 def _read_config_file(path: Path) -> dict[str, object]:

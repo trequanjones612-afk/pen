@@ -41,6 +41,7 @@ def run_setup(
     password_ask: PasswordAsk | None = None,
     printer: Printer | None = None,
     device_flow: Callable[..., dict[str, object]] = device_code_flow,
+    verify: bool = False,
 ) -> int:
     """Create or replace one account and return a process status."""
     say = printer or print
@@ -74,6 +75,17 @@ def run_setup(
         accounts[name] = fields
         if make_default or not default_name:
             default_name = name
+        if verify:
+            say("Checking the login before saving...")
+            try:
+                from mailcli.imap_client import verify_login
+
+                verify_login(_preview_settings(name, fields, secret_kind, secret_value, extra))
+            except MailcliError as exc:
+                say(f"mailcli: {exc}")
+                say("Nothing was saved.")
+                return 1
+            say("Login OK.")
         if secret_kind:
             set_secret(name, secret_kind, secret_value)
             if secret_kind == "refresh" and extra.get("_access_token"):
@@ -211,6 +223,31 @@ def _collect_secret(
     if not secret:
         raise MailcliError("The password was empty.")
     return "password", secret, {}
+
+
+def _preview_settings(name, fields, secret_kind, secret_value, extra):
+    from mailcli.config import Settings
+
+    return Settings(
+        account=name,
+        provider=str(fields.get("provider") or "custom"),
+        host=str(fields.get("imap_host") or ""),
+        imap_port=int(fields.get("imap_port") or 993),
+        smtp_host=str(fields.get("smtp_host") or fields.get("imap_host") or ""),
+        smtp_port=int(fields.get("smtp_port") or 587),
+        smtp_security=str(fields.get("smtp_security") or ""),
+        user=str(fields.get("user") or ""),
+        security=str(fields.get("imap_security") or "ssl"),
+        auth=str(fields.get("auth") or "password"),
+        tls_verify=bool(fields.get("tls_verify", True)),
+        folder=str(fields.get("folder") or "INBOX"),
+        oauth_client_id=str(fields.get("oauth_client_id") or ""),
+        oauth_tenant=str(fields.get("oauth_tenant") or ""),
+        password=secret_value if secret_kind == "password" else "",
+        password_source="prompt",
+        access_token=str(extra.get("_access_token") or ""),
+        timeout=30,
+    )
 
 
 def _existing(path: Path) -> tuple[dict[str, dict[str, object]], str]:

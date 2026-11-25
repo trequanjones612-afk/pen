@@ -224,6 +224,135 @@ def test_send_body_from_stdin(mail_env, capsys, monkeypatch) -> None:
     assert "From stdin" in capsys.readouterr().out
 
 
+def test_huge_inbox_fetches_only_the_newest_window(mail_env, capsys) -> None:
+    mail_env["mailbox"].folders["INBOX"].clear()
+    mail_env["mailbox"].virtual_count["INBOX"] = 50_000
+    mail_env["mailbox"].fetched = 0
+    mail_env["mailbox"].fetch_sets.clear()
+    config = str(mail_env["config"])
+    assert main(["--config", config, "--plain", "inbox"]) == 0
+    captured = capsys.readouterr()
+    assert mail_env["mailbox"].fetched == 20
+    assert mail_env["mailbox"].fetch_sets == ["49981:50000"]
+    assert "1:*" not in " ".join(mail_env["mailbox"].fetch_sets)
+    assert "Fetching newest 20 of 50,000..." in captured.err
+    assert "Connecting to 127.0.0.1:" in captured.err
+    assert "Virtual message 50000" in captured.out
+    assert "Virtual message 49981" in captured.out
+    assert "Virtual message 49980" not in captured.out
+    assert "showing 20 of 50,000" in captured.out
+
+    mail_env["mailbox"].fetched = 0
+    mail_env["mailbox"].fetch_sets.clear()
+    assert main(["--config", config, "--plain", "inbox", "--page", "2"]) == 0
+    paged = capsys.readouterr()
+    assert mail_env["mailbox"].fetch_sets == ["49961:49980"]
+    assert mail_env["mailbox"].fetched == 20
+    assert "Virtual message 49980" in paged.out
+    assert "Virtual message 50000" not in paged.out
+
+    mail_env["mailbox"].fetched = 0
+    mail_env["mailbox"].fetch_sets.clear()
+    assert main(["--config", config, "read", "1"]) == 0
+    opened = capsys.readouterr().out
+    assert "Virtual message 50000" in opened
+    assert mail_env["mailbox"].fetched == 21
+    assert mail_env["mailbox"].fetch_sets[0] == "49981:50000"
+
+
+def test_gmail_search_uses_gm_raw_and_does_not_fetch_the_folder(mail_env, capsys, tmp_path) -> None:
+    mail_env["mailbox"].gmail = True
+    path = tmp_path / "gmail.toml"
+    path.write_text(
+        "\n".join(
+            [
+                'provider = "gmail"',
+                f'user = "{mail_env["user"]}"',
+                'host = "127.0.0.1"',
+                f"imap_port = {mail_env['imap_port']}",
+                f"smtp_port = {mail_env['smtp_port']}",
+                'security = "starttls"',
+                "tls_verify = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    mail_env["mailbox"].fetched = 0
+    assert main(["--config", str(path), "--plain", "search", "invoice"]) == 0
+    assert mail_env["mailbox"].last_search == "X-GM-RAW"
+    assert mail_env["mailbox"].fetched == 1
+    assert "invoice 1842" in capsys.readouterr().out
+
+
+def test_login_failure_includes_the_server_text(mail_env, capsys, monkeypatch, tmp_path) -> None:
+    mail_env["mailbox"].auth_failure = (
+        "NO [ALERT] Application-specific password required: "
+        "https://support.google.com/accounts/answer/185833"
+    )
+    path = tmp_path / "gmail.toml"
+    path.write_text(
+        "\n".join(
+            [
+                'provider = "gmail"',
+                'user = "you@gmail.com"',
+                'host = "127.0.0.1"',
+                f"imap_port = {mail_env['imap_port']}",
+                f"smtp_port = {mail_env['smtp_port']}",
+                'security = "starttls"',
+                "tls_verify = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("MAILCLI_PASSWORD", raising=False)
+    monkeypatch.setattr("mailcli.secrets.get_secret", lambda *_args: "wrong-app-password")
+    assert main(["--config", str(path), "test-login"]) == 1
+    error = capsys.readouterr().err
+    assert "Application-specific password required" in error
+    assert "myaccount.google.com/apppasswords" in error
+    assert "MAILCLI_PASSWORD" not in error
+    assert "stored for account" in error
+
+    monkeypatch.setenv("MAILCLI_PASSWORD", "also-wrong")
+    assert main(["--config", str(path), "test-login"]) == 1
+    error = capsys.readouterr().err
+    assert "Application-specific password required" in error
+    assert "MAILCLI_PASSWORD" in error
+    assert "also-wrong" not in error
+
+
+def test_login_succeeds_and_setup_verify_refuses_to_save(mail_env, capsys, monkeypatch, tmp_path) -> None:
+    assert main(["--config", str(mail_env["config"]), "test-login"]) == 0
+    assert "Login OK" in capsys.readouterr().out
+
+    from mailcli.setup import run_setup
+
+    saved = tmp_path / "new-account.toml"
+
+    def reject(_settings):
+        raise MailcliError("Login failed: Invalid credentials")
+
+    monkeypatch.setattr("mailcli.imap_client.verify_login", reject)
+    monkeypatch.setattr("mailcli.setup.set_secret", lambda *_args: None)
+    lines: list[str] = []
+    code = run_setup(
+        config_path=saved,
+        provider="gmail",
+        user="you@gmail.com",
+        account="home",
+        verify=True,
+        password_ask=lambda _prompt: "abcd efgh ijkl mnop",
+        printer=lines.append,
+    )
+    assert code == 1
+    assert not saved.exists()
+    text = "\n".join(lines)
+    assert "Invalid credentials" in text
+    assert "Nothing was saved." in text
+
+
 def test_wrong_password_does_not_leak(mail_env, capsys, monkeypatch) -> None:
     secret = "s3cret-token-should-not-print"
     monkeypatch.setenv("MAILCLI_PASSWORD", secret)

@@ -81,7 +81,7 @@ def run_interactive(settings: Settings, *, plain: bool) -> int:
 
 def _print_list(settings: Settings, folder: str, plain: bool) -> None:
     with ImapSession(settings) as session:
-        rows = session.summaries(folder)
+        rows, _exists = session.summaries(folder)
     title = f"{folder}  {len(rows)} message" + ("s" if len(rows) != 1 else "") + "  newest first"
     empty = f"{folder} is empty."
     print(
@@ -98,7 +98,7 @@ def _print_list(settings: Settings, folder: str, plain: bool) -> None:
 
 def _print_search(settings: Settings, folder: str, query: str, plain: bool) -> None:
     with ImapSession(settings) as session:
-        rows = session.search(folder, query)
+        rows, _exists = session.search(folder, query)
     title = f'Search "{query}" in {folder}  {len(rows)} match' + ("es" if len(rows) != 1 else "")
     print(
         render_table(

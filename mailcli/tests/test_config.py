@@ -105,8 +105,12 @@ def test_password_prompt_requires_a_terminal(tmp_path: Path, monkeypatch: pytest
     monkeypatch.delenv("MAILCLI_PASSWORD", raising=False)
     monkeypatch.setattr("mailcli.config.sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("mailcli.config.default_config_path", lambda: tmp_path / "missing")
-    with pytest.raises(MailcliError, match="MAILCLI_PASSWORD"):
-        load_settings(user="you@example.com")
+    with pytest.raises(MailcliError, match="No stored password found in the credential store for account default"):
+        try:
+            load_settings(user="you@example.com")
+        except MailcliError as exc:
+            assert "MAILCLI_PASSWORD" not in str(exc)
+            raise
 
 
 def test_relative_cert_path_is_next_to_the_config(tmp_path: Path) -> None:

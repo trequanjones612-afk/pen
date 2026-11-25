@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import imaplib
 import re
+import socket
 import ssl
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +25,9 @@ from mailcli.tlsutil import build_ssl_context
 _UID_RE = re.compile(br"\bUID (\d+)")
 _FLAGS_RE = re.compile(br"FLAGS \(([^)]*)\)")
 _INTERNALDATE_RE = re.compile(br'INTERNALDATE "([^"]+)"')
+DEFAULT_LIMIT = 20
+HEADER_ITEMS = "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])"
+
 _MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -97,57 +102,56 @@ class ImapSession:
                 names.append(name)
         return names
 
-    def summaries(self, folder: str) -> list[Summary]:
-        imap = self._require()
-        _select(imap, folder)
-        pairs = _uid_fetch(
-            imap,
-            "1:*",
-            "(UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])",
-        )
-        collected: list[tuple[datetime, int, Summary]] = []
-        seen_uids: set[str] = set()
-        for meta, literal in pairs:
-            uid_match = _UID_RE.search(meta)
-            if not uid_match:
-                continue
-            uid = uid_match.group(1).decode("ascii")
-            if uid in seen_uids:
-                continue
-            seen_uids.add(uid)
-            flags = _flags(meta)
-            header = literal or header_bytes(b"")
-            parsed = parse_message(header if header.endswith(b"\r\n") else header + b"\r\n\r\n")
-            when = parsed.date or _internaldate(meta)
-            summary = Summary(
-                index=0,
-                uid=uid,
-                when=when,
-                sender=parsed.sender,
-                subject=parsed.subject,
-                unread=b"\\Seen" not in flags,
-            )
-            collected.append((_aware(when), int(uid), summary))
-        collected.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        ordered: list[Summary] = []
-        for index, (_, _, summary) in enumerate(collected, 1):
-            summary.index = index
-            ordered.append(summary)
-        return ordered
+    def summaries(self, folder: str, *, limit: int = DEFAULT_LIMIT, offset: int = 0) -> tuple[list[Summary], int]:
+        """Return one window of messages and the folder's EXISTS count.
 
-    def read(self, folder: str, number: int) -> tuple[Summary, ParsedMessage, int]:
+        The window is the newest ``limit`` messages after skipping ``offset``
+        newer ones. Only that sequence range is fetched.
+        """
+        limit, offset = _bounds(limit, offset)
+        imap = self._require()
+        exists = _select(imap, folder)
+        if exists <= 0 or offset >= exists:
+            if exists <= 0:
+                _status(f"{folder} is empty.")
+            else:
+                _status(f"No messages in that range. {folder} has {exists:,} messages.")
+            return [], exists
+        start, end = _sequence_window(exists, limit, offset)
+        count = end - start + 1
+        if offset:
+            _status(f"Fetching {count:,} of {exists:,}, starting after the newest {offset:,}...")
+        else:
+            _status(f"Fetching newest {count:,} of {exists:,}...")
+        pairs = _sequence_fetch(imap, f"{start}:{end}", HEADER_ITEMS)
+        return _summaries_from_pairs(pairs, index_base=1), exists
+
+    def read(
+        self,
+        folder: str,
+        number: int,
+        *,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+    ) -> tuple[Summary, ParsedMessage, int]:
+        """Open row ``number`` in the same window ``inbox`` would print."""
         if number < 1:
             raise MailcliError("Message numbers start at 1.")
-        summaries = self.summaries(folder)
+        summaries, exists = self.summaries(folder, limit=limit, offset=offset)
         if not summaries:
-            raise MailcliError(f"{folder} is empty.")
+            if exists <= 0:
+                raise MailcliError(f"{folder} is empty.")
+            raise MailcliError(
+                f"No message {number}. That range is outside {folder}, which has {exists:,} messages."
+            )
         if number > len(summaries):
             raise MailcliError(
-                f"No message {number}. {folder} has {len(summaries)} message"
-                + ("s." if len(summaries) != 1 else ".")
+                f"No message {number} in this window of {len(summaries)}. "
+                f"{folder} has {exists:,} messages. Use --page or --offset to see older mail."
             )
         summary = summaries[number - 1]
         imap = self._require()
+        _status(f"Fetching message {number}...")
         pairs = _uid_fetch(imap, summary.uid, "(UID FLAGS BODY.PEEK[])")
         raw = b""
         for _meta, literal in pairs:
@@ -160,21 +164,44 @@ class ImapSession:
         try:
             imap.uid("STORE", summary.uid, "+FLAGS", "(\\Seen)")
         except imaplib.IMAP4.error as exc:
-            raise _imap_error(exc) from exc
+            raise _imap_error(exc, self.settings) from exc
+        except (TimeoutError, socket.timeout) as exc:
+            raise _timeout(self.settings) from exc
         summary.unread = False
-        return summary, parsed, len(summaries)
+        return summary, parsed, exists
 
-    def search(self, folder: str, text: str) -> list[Summary]:
+    def search(self, folder: str, text: str, *, limit: int = DEFAULT_LIMIT) -> tuple[list[Summary], int]:
+        """Server-side search. Only the capped hits are fetched, not the folder."""
         query = text.strip()
         if not query:
             raise MailcliError("Give the words to search for.")
+        limit, _offset = _bounds(limit, 0)
         imap = self._require()
-        _select(imap, folder)
-        matched = _search_uids(imap, query)
-        return [item for item in self.summaries(folder) if item.uid in matched]
+        exists = _select(imap, folder)
+        _status(f"Searching {folder}...")
+        uids = _search_uids(imap, query, gmail=_gmail(imap, self.settings))
+        if not uids:
+            return [], exists
+        chosen = sorted(uids, key=int, reverse=True)[:limit]
+        _status(f"Fetching {len(chosen):,} of {len(uids):,} search hits...")
+        pairs = _uid_fetch(imap, ",".join(chosen), HEADER_ITEMS)
+        summaries = _summaries_from_pairs(pairs, index_base=0)
+        for summary in summaries:
+            sequence = summary.index
+            if sequence and exists:
+                summary.index = exists - sequence + 1
+        summaries.sort(key=lambda item: item.index)
+        return summaries, exists
+
+
+def verify_login(settings: Settings) -> None:
+    """Log in and log out. Raises MailcliError with the server text on failure."""
+    imap = _connect(settings)
+    _close(imap)
 
 
 def _connect(settings: Settings) -> imaplib.IMAP4:
+    _status(f"Connecting to {settings.host}:{settings.imap_port}...")
     context = build_ssl_context(
         settings.host,
         tls_verify=settings.tls_verify,
@@ -196,10 +223,8 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
             f"Could not connect to IMAP at {settings.host}:{settings.imap_port}. "
             "Check the host and port from mailcli setup."
         ) from exc
-    except TimeoutError as exc:
-        raise MailcliError(
-            f"Timed out connecting to IMAP at {settings.host}:{settings.imap_port}."
-        ) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise _timeout(settings) from exc
     except OSError as exc:
         raise MailcliError(
             f"Could not connect to IMAP at {settings.host}:{settings.imap_port}: {exc}"
@@ -211,11 +236,10 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
                     f"The IMAP server at {settings.host}:{settings.imap_port} does not offer STARTTLS."
                 )
             imap.starttls(ssl_context=context)
+        _apply_timeout(imap, settings)
         typ, data = _authenticate(imap, settings)
         if typ != "OK":
-            raise MailcliError("Login failed. Check the account and its saved sign-in.")
-        # ``data`` can echo server text. Drop it so it cannot leak into a traceback we print.
-        del data
+            raise _login_failure(settings, _bytes_text(data))
     except MailcliError:
         _close(imap)
         raise
@@ -229,8 +253,11 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
         ) from exc
     except imaplib.IMAP4.error as exc:
         _close(imap)
-        raise _login_or_imap(exc) from exc
-    except (TimeoutError, OSError) as exc:
+        raise _login_failure(settings, _server_text(exc)) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        _close(imap)
+        raise _timeout(settings) from exc
+    except OSError as exc:
         _close(imap)
         raise MailcliError(f"The IMAP connection to {settings.host} failed: {exc}") from exc
     return imap
@@ -263,11 +290,97 @@ def _close(imap: imaplib.IMAP4) -> None:
             pass
 
 
-def _select(imap: imaplib.IMAP4, folder: str) -> None:
+def _select(imap: imaplib.IMAP4, folder: str) -> int:
     encoded = encode_mailbox(folder)
-    typ, _data = imap.select(_quote(encoded))
+    try:
+        typ, data = imap.select(_quote(encoded))
+    except imaplib.IMAP4.error as exc:
+        raise _imap_error(exc) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise MailcliError("Timed out waiting for the server to open the folder.") from exc
     if typ != "OK":
         raise MailcliError(f"Could not open folder {folder}.")
+    if not data or data[0] in (None, b"", ""):
+        return 0
+    try:
+        return int(data[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _sequence_fetch(imap: imaplib.IMAP4, sequence_set: str, query: str) -> list[tuple[bytes, bytes]]:
+    try:
+        typ, data = imap.fetch(sequence_set, query)
+    except imaplib.IMAP4.error as exc:
+        raise _imap_error(exc) from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise MailcliError("Timed out while fetching message headers.") from exc
+    if typ != "OK":
+        return []
+    return _fetch_pairs(data)
+
+
+def _bounds(limit: int, offset: int) -> tuple[int, int]:
+    if limit <= 0:
+        raise MailcliError("--limit must be a positive number.")
+    if offset < 0:
+        raise MailcliError("--offset cannot be negative.")
+    return limit, offset
+
+
+def _sequence_window(exists: int, limit: int, offset: int) -> tuple[int, int]:
+    end = exists - offset
+    start = max(1, end - limit + 1)
+    return start, end
+
+
+def _summaries_from_pairs(pairs: list[tuple[bytes, bytes]], *, index_base: int) -> list[Summary]:
+    collected: list[tuple[datetime, int, int, Summary]] = []
+    seen_uids: set[str] = set()
+    for meta, literal in pairs:
+        uid_match = _UID_RE.search(meta)
+        if not uid_match:
+            continue
+        uid = uid_match.group(1).decode("ascii")
+        if uid in seen_uids:
+            continue
+        seen_uids.add(uid)
+        sequence = _sequence_number(meta)
+        flags = _flags(meta)
+        header = literal or b""
+        if header and not header.endswith(b"\r\n"):
+            header += b"\r\n\r\n"
+        parsed = parse_message(header or header_bytes(b""))
+        when = parsed.date or _internaldate(meta)
+        summary = Summary(
+            index=sequence if index_base == 0 else 0,
+            uid=uid,
+            when=when,
+            sender=parsed.sender,
+            subject=parsed.subject,
+            unread=b"\\Seen" not in flags,
+        )
+        collected.append((_aware(when), int(uid), sequence, summary))
+    collected.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    ordered: list[Summary] = []
+    for position, (_when, _uid, _sequence, summary) in enumerate(collected, index_base or 1):
+        if index_base:
+            summary.index = position
+        ordered.append(summary)
+    return ordered
+
+
+def _sequence_number(meta: bytes) -> int:
+    match = re.match(br"(\d+)\s+FETCH", meta)
+    if not match:
+        return 0
+    return int(match.group(1))
+
+
+def _gmail(imap: imaplib.IMAP4, settings: Settings) -> bool:
+    if settings.provider == "gmail":
+        return True
+    return "X-GM-EXT-1" in {item.upper() for item in imap.capabilities}
 
 
 def _uid_fetch(imap: imaplib.IMAP4, uid_set: str, query: str) -> list[tuple[bytes, bytes]]:
@@ -283,26 +396,38 @@ def _uid_fetch(imap: imaplib.IMAP4, uid_set: str, query: str) -> list[tuple[byte
     return _fetch_pairs(data)
 
 
-def _search_uids(imap: imaplib.IMAP4, query: str) -> set[str]:
+def _search_uids(imap: imaplib.IMAP4, query: str, *, gmail: bool) -> list[str]:
+    if gmail:
+        try:
+            return _run_search(imap, "X-GM-RAW", query)
+        except MailcliError as exc:
+            if "rejected" not in str(exc).lower():
+                raise
+    return _run_search(imap, "TEXT", query)
+
+
+def _run_search(imap: imaplib.IMAP4, key: str, query: str) -> list[str]:
     try:
-        encoded = query.encode("ascii")
-        typ, data = imap.uid("SEARCH", "TEXT", _quote(encoded.decode("ascii")))
+        query.encode("ascii")
+        typ, data = imap.uid("SEARCH", key, _quote(query))
     except UnicodeEncodeError:
         encoded = query.encode("utf-8")
         imap.literal = encoded
         try:
-            typ, data = imap.uid("SEARCH", "CHARSET", "UTF-8", "TEXT")
+            typ, data = imap.uid("SEARCH", "CHARSET", "UTF-8", key)
         finally:
             imap.literal = None
     except imaplib.IMAP4.error as exc:
-        raise _imap_error(exc) from exc
+        raise MailcliError(f"The server rejected the search: {_server_text(exc)}") from exc
+    except (TimeoutError, socket.timeout) as exc:
+        raise MailcliError("Timed out while searching the folder.") from exc
     if typ != "OK":
         raise MailcliError("The server rejected the search.")
     blob = b""
     if data and data[0]:
         first = data[0]
         blob = first if isinstance(first, bytes) else bytes(first)
-    return {part.decode("ascii", "replace") for part in blob.split() if part}
+    return [part.decode("ascii", "replace") for part in blob.split() if part]
 
 
 def _fetch_pairs(data: list | None) -> list[tuple[bytes, bytes]]:
@@ -393,17 +518,98 @@ def _safe(exc: BaseException) -> str:
     return text
 
 
-def _login_or_imap(exc: imaplib.IMAP4.error) -> MailcliError:
-    text = _safe(exc).lower()
-    if any(word in text for word in ("auth", "login", "credential", "password", "invalid")):
-        return MailcliError("Login failed. Check the account name and MAILCLI_PASSWORD.")
-    return MailcliError("The IMAP server rejected a command.")
-
-
-def _imap_error(exc: imaplib.IMAP4.error) -> MailcliError:
-    text = _safe(exc).lower()
-    if "auth" in text or "login" in text:
-        return MailcliError("Login failed. Check the account name and MAILCLI_PASSWORD.")
-    if isinstance(exc, imaplib.IMAP4.abort) or "socket" in text or "eof" in text:
+def _imap_error(exc: imaplib.IMAP4.error, settings: Settings | None = None) -> MailcliError:
+    text = _server_text(exc)
+    lowered = text.lower()
+    if any(word in lowered for word in ("auth", "login", "credential", "password", "invalid", "alert")):
+        if settings is not None:
+            return _login_failure(settings, text)
+        return MailcliError(f"Login failed: {text}")
+    if isinstance(exc, imaplib.IMAP4.abort) or "socket" in lowered or "eof" in lowered:
         return MailcliError("The IMAP server closed the connection.")
-    return MailcliError("The IMAP server rejected a command.")
+    return MailcliError(f"The IMAP server rejected a command: {text}")
+
+
+def _login_failure(settings: Settings, server_text: str) -> MailcliError:
+    """Include the server text and a hint. Name MAILCLI_PASSWORD only if it was sent."""
+    detail = _scrub(server_text, settings).strip() or "the server rejected the login."
+    pieces = [f"Login failed: {detail}"]
+    hint = _provider_hint(settings.provider, detail)
+    if hint:
+        pieces.append(hint)
+    if settings.password_source == "env":
+        pieces.append("The password sent was MAILCLI_PASSWORD.")
+    elif settings.password_source == "store":
+        pieces.append(f"The password sent was the one stored for account {settings.account}.")
+    return MailcliError(" ".join(pieces))
+
+
+def _provider_hint(provider: str, server_text: str) -> str:
+    lowered = server_text.lower()
+    if provider == "gmail" or "application-specific password" in lowered:
+        return (
+            "Gmail does not accept the normal account password. "
+            "Turn on 2-Step Verification, then create an app password at "
+            "https://myaccount.google.com/apppasswords."
+        )
+    if provider == "yahoo":
+        return (
+            "Yahoo needs an app password from "
+            "https://login.yahoo.com/account/security/app-passwords "
+            "after two-step verification is on."
+        )
+    if provider == "icloud":
+        return (
+            "iCloud needs an app-specific password from https://account.apple.com. "
+            "Two-factor authentication must be on."
+        )
+    if provider == "outlook":
+        return "Outlook personal accounts sign in with the device code from mailcli setup, not the account password."
+    if "invalid credentials" in lowered or "authenticationfailed" in lowered:
+        return "Check the password saved for this account."
+    return ""
+
+
+def _scrub(text: str, settings: Settings) -> str:
+    for secret in (settings.password, settings.access_token):
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
+def _timeout(settings: Settings) -> MailcliError:
+    seconds = int(settings.timeout) if settings.timeout else 30
+    return MailcliError(
+        f"Timed out after {seconds} seconds waiting for IMAP at {settings.host}:{settings.imap_port}. "
+        "The server did not answer."
+    )
+
+
+def _apply_timeout(imap: imaplib.IMAP4, settings: Settings) -> None:
+    sock = getattr(imap, "sock", None)
+    if sock is not None and settings.timeout:
+        sock.settimeout(settings.timeout)
+
+
+def _status(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def _server_text(exc: BaseException) -> str:
+    parts: list[str] = []
+    for part in exc.args:
+        parts.append(_bytes_text(part))
+    text = " ".join(part for part in parts if part).strip()
+    if text.startswith("b'") or text.startswith('b"'):
+        text = text[2:-1]
+    return text
+
+
+def _bytes_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    if isinstance(value, (list, tuple)):
+        return " ".join(_bytes_text(part) for part in value if part is not None)
+    return str(value)
