@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from mailcli import __version__
-from mailcli.config import Settings, load_settings
+from mailcli.config import Settings, default_config_path, list_account_names, load_settings
 from mailcli.errors import MailcliError
 from mailcli.imap_client import ImapSession
 from mailcli.interactive import run_interactive
@@ -20,6 +20,20 @@ def main(argv: list[str] | None = None) -> int:
     _prefer_utf8_stdio()
     try:
         args = _parser().parse_args(argv)
+        if args.command == "setup":
+            from mailcli.setup import run_setup
+
+            return run_setup(
+                config_path=Path(args.config).expanduser() if args.config else None,
+                provider=args.provider,
+                user=getattr(args, "setup_user", None) or args.user,
+                account=args.account_name or args.account,
+                oauth_client_id=args.oauth_client_id,
+                oauth_tenant=args.oauth_tenant,
+            )
+        if args.command == "accounts":
+            return _cmd_accounts(args)
+        _offer_setup(args)
         if args.command is None:
             settings = _settings(args, folder=None)
             plain = _plain(args)
@@ -52,14 +66,15 @@ def main(argv: list[str] | None = None) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mailcli",
-        description="Terminal email for Proton Mail Bridge. Passwords come from MAILCLI_PASSWORD or a prompt, never from the config file.",
+        description="Terminal email. Passwords and tokens stay in the OS credential store. MAILCLI_PASSWORD overrides a stored password.",
     )
     parser.add_argument("--version", action="version", version=f"mailcli {__version__}")
     parser.add_argument(
         "--config",
         help="config file (TOML or INI). Default: %%APPDATA%%\\mailcli\\config on Windows, ~/.config/mailcli/config elsewhere",
     )
-    parser.add_argument("--host", help="IMAP and SMTP host (default 127.0.0.1)")
+    parser.add_argument("--account", help="account name from mailcli setup")
+    parser.add_argument("--host", help="IMAP host (overrides the account)")
     parser.add_argument("--imap-port", type=int, help="IMAP port (default 1143)")
     parser.add_argument("--smtp-port", type=int, help="SMTP port (default 1025)")
     parser.add_argument("--user", help="mailbox login, usually your Proton address")
@@ -81,6 +96,15 @@ def _parser() -> argparse.ArgumentParser:
         help="print aligned columns even when rich is installed",
     )
     sub = parser.add_subparsers(dest="command")
+
+    setup = sub.add_parser("setup", help="choose a provider and save an account")
+    setup.add_argument("--provider", help="gmail, outlook, yahoo, icloud, proton, or custom")
+    setup.add_argument("--user", dest="setup_user", help="email address for the new account")
+    setup.add_argument("--account-name", help="short name used with --account")
+    setup.add_argument("--oauth-client-id", help="OAuth client id. Outlook has a default; Gmail requires yours")
+    setup.add_argument("--oauth-tenant", help="Microsoft tenant, default consumers for personal accounts")
+
+    sub.add_parser("accounts", help="list saved accounts")
 
     inbox = sub.add_parser("inbox", help="list messages, newest first")
     inbox.add_argument("--limit", type=int, default=25, help="how many rows to print (default 25)")
@@ -109,6 +133,7 @@ def _settings(args: argparse.Namespace, folder: str | None) -> Settings:
     chosen = folder or args.folder
     return load_settings(
         config_path=args.config,
+        account=args.account,
         host=args.host,
         imap_port=args.imap_port,
         smtp_port=args.smtp_port,
@@ -118,6 +143,38 @@ def _settings(args: argparse.Namespace, folder: str | None) -> Settings:
         security=args.security,
         insecure_localhost=args.insecure_localhost,
     )
+
+
+def _offer_setup(args: argparse.Namespace) -> None:
+    """Start the wizard when this machine has no config yet."""
+    if args.user or args.host:
+        return
+    path = Path(args.config).expanduser() if args.config else default_config_path()
+    if path.is_file():
+        return
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        from mailcli.setup import run_setup
+
+        print("No mail account is configured. Starting setup.")
+        print("")
+        code = run_setup(config_path=path)
+        if code != 0:
+            raise SystemExit(code)
+        return
+    raise MailcliError("No mail account is configured. Run: python -m mailcli setup")
+
+
+def _cmd_accounts(args: argparse.Namespace) -> int:
+    path = Path(args.config).expanduser() if args.config else default_config_path()
+    names, default_name = list_account_names(path)
+    if not names:
+        print("No accounts yet. Run: python -m mailcli setup")
+        return 0
+    print(f"Accounts in {path}:")
+    for name in names:
+        marker = " (default)" if name == default_name else ""
+        print(f"  {name}{marker}")
+    return 0
 
 
 def _plain(args: argparse.Namespace) -> bool:

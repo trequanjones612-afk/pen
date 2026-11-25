@@ -1,20 +1,73 @@
-mailcli demo
-============
+mailcli setup and inbox
+========================
 
-Server: GreenMail 2.1.15 standalone (local only).
-Account: demo@localhost
-IMAPS 127.0.0.1:3993, SMTPS 127.0.0.1:3465, implicit TLS, self-signed certificate.
-mailcli was started with security = ssl and tls_verify = false.
-tls_verify = false is accepted only because the host is loopback.
-GreenMail 2.1.15 does not advertise STARTTLS. Proton Mail Bridge does;
-the default security = starttls path is covered by the pytest suite.
+Setup is the real wizard (mailcli.setup, which `python -m mailcli setup` calls).
+The provider chosen below is Gmail. The app password was typed at the hidden
+prompt and is not in this transcript. It was kept in the credential store for
+that process, not written to gmail.toml. On Windows that store is Credential
+Manager via the keyring package. This VM's Secret Service prompt does not
+unlock, so the capture used an in-memory keyring backend.
 
-MAILCLI_PASSWORD was set in the environment for this session and is not printed.
-Six messages were delivered first. "Re: design review" was already marked read,
-so the U column is not a solid block of stars. docs/inbox.png is that first inbox
-with the optional rich table.
+$ python -m mailcli setup
 
-$ mailcli inbox
+Choose a mail provider. mailcli will fill in the servers.
+
+  1  Gmail
+  2  Outlook, Hotmail, or Live
+  3  Yahoo
+  4  iCloud
+  5  Proton
+  6  Custom server
+
+Provider number: 1
+
+Gmail
+  IMAP  imap.gmail.com:993  SSL
+  SMTP  smtp.gmail.com:465  SSL
+Gmail rejects your normal account password for IMAP and SMTP.
+Turn on 2-Step Verification, then create an app password:
+  https://myaccount.google.com/apppasswords
+Google's own steps: https://support.google.com/accounts/answer/185833
+The app password is 16 letters. Spaces in it do not matter.
+SMTP on port 587 with STARTTLS also works; this preset uses port 465 with SSL.
+If you would rather use OAuth, pass --oauth-client-id from a Google Cloud
+client you registered yourself. An app password is the usual path.
+
+Email address: you@gmail.com
+Account name [you]: home
+App password: (typed, not echoed)
+
+Saved account home (Gmail) to gmail.toml
+The password or token is in the OS credential store, not in that file.
+home is the default account.
+
+gmail.toml after setup (no password, no token):
+
+default_account = "home"
+
+[accounts.home]
+provider = "gmail"
+user = "you@gmail.com"
+imap_host = "imap.gmail.com"
+imap_port = 993
+imap_security = "ssl"
+smtp_host = "smtp.gmail.com"
+smtp_port = 465
+smtp_security = "ssl"
+auth = "password"
+folder = "INBOX"
+tls_verify = true
+
+Inbox
+-----
+
+The mailbox below is GreenMail 2.1.15 on this machine, configured as a custom
+account (IMAPS 127.0.0.1:3993, SMTPS 127.0.0.1:3465, tls_verify = false).
+No Gmail, Outlook, Yahoo, iCloud, or Proton account was contacted.
+MAILCLI_PASSWORD was set for that local account and is not shown.
+Six messages were delivered over SMTP. "Re: design review" was already read.
+
+$ python -m mailcli --config greenmail.toml --plain inbox
 INBOX  6 messages  newest first
 
 #  U  Date              From                          Subject
@@ -25,7 +78,8 @@ INBOX  6 messages  newest first
 4  *  2026-11-22 08:27  Sam Okonkwo <sam.okonkwo@...  Build failed on main — auth tests
 5     2026-11-21 15:18  Helena Vogt <helena.vogt@...  Re: design review
 6  *  2026-11-20 07:55  Noah Ibrahim <noah.ibrahi...  Welcome to the lab list
-$ mailcli read 1
+
+$ python -m mailcli --config greenmail.toml read 1
 Message 1 of 6  INBOX
 
 From: Maya Chen <maya.chen@example.com>
@@ -35,41 +89,9 @@ Subject: Project kickoff notes
 
 Hi team,
 
-The kickoff for the harbor telemetry project is Thursday at 10:00 in the east lab.
+The kickoff is Thursday at 10:00 in the east lab.
 
-Please read the attached agenda before we meet.
+Please read the attached agenda.
 
 Attachments:
   - agenda.txt (text/plain, 50 B)
-$ mailcli search invoice
-Search "invoice" in INBOX  1 match
-
-#  U  Date              From                          Subject
--  -  ----------------  ----------------------------  ---------------------------
-2  *  2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
-$ mailcli send --to demo@localhost --subject "Lab door code for Thursday" --body "The east lab door code for the kickoff is 4412. I will bring the spare relay."
-Sent to demo@localhost.
-Subject: Lab door code for Thursday
-$ mailcli inbox
-INBOX  7 messages  newest first
-
-#  U  Date              From                          Subject
--  -  ----------------  ----------------------------  ---------------------------------
-1  *  2026-11-25 12:56  demo@localhost                Lab door code for Thursday
-2     2026-11-25 09:14  Maya Chen <maya.chen@exam...  Project kickoff notes
-3  *  2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
-4  *  2026-11-23 11:05  Priya Shah <priya.shah@ex...  Saturday ridge hike
-5  *  2026-11-22 08:27  Sam Okonkwo <sam.okonkwo@...  Build failed on main — auth tests
-6     2026-11-21 15:18  Helena Vogt <helena.vogt@...  Re: design review
-7  *  2026-11-20 07:55  Noah Ibrahim <noah.ibrahi...  Welcome to the lab list
-$ mailcli read 1
-Message 1 of 7  INBOX
-
-From: demo@localhost
-To: demo@localhost
-Date: Wed, 25 Nov 2026 12:56:39 +0000
-Subject: Lab door code for Thursday
-
-The east lab door code for the kickoff is 4412. I will bring the spare relay.
-
-Attachments: none

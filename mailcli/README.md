@@ -1,16 +1,15 @@
 # mailcli
 
-mailcli is an original terminal email client for [Proton Mail Bridge](https://proton.me/mail/bridge). It is not a port of NeoMutt, Mutt, or any other mail client. IMAP and SMTP use the Python standard library (`imaplib`, `smtplib`, `email`, `ssl`). It runs in Windows PowerShell 5.1 and later, with no WSL or MSYS2.
+mailcli is an original terminal email client. It is not a port of NeoMutt, Mutt, or any other mail client. IMAP and SMTP use the Python standard library (`imaplib`, `smtplib`, `email`, `ssl`). OAuth uses `urllib`. Secrets use the `keyring` package, which talks to Windows Credential Manager. It runs in Windows PowerShell 5.1 and later, with no WSL or MSYS2.
 
 `rich` is optional. When it is installed and stdout is a terminal, `inbox` and `search` draw a table. Otherwise mailcli prints aligned columns.
 
-![mailcli inbox](docs/inbox.png)
+![mailcli setup and inbox](docs/inbox.png)
 
 ## Requirements
 
 - Python 3.9 or newer. On Windows, install it from [python.org](https://www.python.org/downloads/) and enable “Add python.exe to PATH”.
-- Proton Mail Bridge, which requires a paid Proton plan (Mail Plus, Proton Unlimited, or a business plan). The free plan does not include Bridge.
-- Bridge running locally. The usual endpoints are IMAP `127.0.0.1:1143` and SMTP `127.0.0.1:1025`, both with STARTTLS. Bridge uses a certificate it generated itself.
+- An email account on Gmail, Outlook, Hotmail, Live, Yahoo, iCloud, or any other IMAP/SMTP server.
 
 ## Install (PowerShell)
 
@@ -21,60 +20,98 @@ py -3 -m pip install -e .\mailcli
 py -3 -m pip install -e ".\mailcli[rich]"
 ```
 
-`python` works in place of `py -3` when the installer put it on `PATH`. Either command creates a `mailcli` executable. `python -m mailcli` works as well.
-
-Create the config file and edit the account. The sample user is a placeholder:
+`python` works in place of `py -3` when the installer put it on `PATH`. The install creates a `mailcli` command. If PowerShell says it cannot find `mailcli`, the Scripts directory is not on `PATH`. Use the module form, which does not need that directory:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path $env:APPDATA\mailcli
-Copy-Item .\mailcli\config.example $env:APPDATA\mailcli\config
-notepad $env:APPDATA\mailcli\config
+python -m mailcli setup
+python -m mailcli inbox
 ```
 
-Set the Bridge mailbox password for this session. This is the password Bridge shows for the account, not the password you use on proton.me, and mailcli never writes it to disk or to its own output:
+Or add the Scripts folder for your Python version. The `3xx` segment is the version `py -3` printed, such as `Python313`:
 
 ```powershell
-$env:MAILCLI_PASSWORD = "paste-the-bridge-password"
-mailcli inbox
+$scripts = Join-Path $env:APPDATA "Python\Python313\Scripts"
+$env:Path = "$scripts;$env:Path"
 ```
 
-On Linux and macOS the same install is `pip install -e ./mailcli`, and the config file is `~/.config/mailcli/config` (or `$XDG_CONFIG_HOME/mailcli/config`).
+To keep that for new terminals, add the same folder under Settings, System, About, Advanced system settings, Environment Variables, Path.
 
-## Proton Mail Bridge
+On Linux and macOS the install is `pip install -e ./mailcli`. The config file is `~/.config/mailcli/config` (or `$XDG_CONFIG_HOME/mailcli/config`).
 
-1. Subscribe to a Proton plan that includes Bridge, install Bridge, and sign in.
-2. Leave Bridge running. In its settings, confirm IMAP and SMTP are enabled. The defaults are `127.0.0.1` port `1143` (IMAP) and port `1025` (SMTP). Both expect STARTTLS, not implicit TLS.
-3. Copy the account address into `user`. Copy the Bridge mailbox password into `MAILCLI_PASSWORD` only. Do not pass the password as a command-line argument; shell history would keep it.
-4. Bridge’s certificate is self-signed. Either:
-   - export the certificate from Bridge and set `tls_cert` to that PEM file (verification stays on), or
-   - set `tls_verify = false`, which mailcli accepts only when `host` is `127.0.0.1`, `localhost`, or `::1`.
+## Setup
 
-`--insecure-localhost` is the same loopback-only switch for one invocation. Pointing it at any other host is an error.
+`python -m mailcli` with no config file starts the same wizard as `python -m mailcli setup`.
 
-`security` is `starttls` by default. Set it to `ssl` (or pass `--security ssl`) for a server that speaks implicit TLS on the IMAP and SMTP ports instead of STARTTLS. Bridge does not use that mode.
+```text
+  1  Gmail
+  2  Outlook, Hotmail, or Live
+  3  Yahoo
+  4  iCloud
+  5  Proton
+  6  Custom server
+```
 
-A relative `tls_cert` path is resolved next to the config file. When `tls_cert` is set, that file is the trust anchor and verification stays on even if `tls_verify` is false.
+The wizard writes hosts, ports, and the address into the config file. The password or refresh token goes to the OS credential store. `MAILCLI_PASSWORD` overrides a stored password for a single command and is never written to the config file.
+
+More than one account is normal. The first one is the default. Later commands can name another:
+
+```powershell
+python -m mailcli --account work inbox
+python -m mailcli accounts
+```
+
+### Gmail
+
+IMAP `imap.gmail.com` port 993 SSL. SMTP `smtp.gmail.com` port 465 SSL (port 587 STARTTLS also works if you change the account).
+
+Gmail will not accept the normal account password. Turn on 2-Step Verification, then create an app password at <https://myaccount.google.com/apppasswords>. Google's steps are at <https://support.google.com/accounts/answer/185833>.
+
+An optional OAuth path exists for a client id you register yourself: `python -m mailcli setup --provider gmail --user you@gmail.com --oauth-client-id YOUR_CLIENT_ID`. The app password is the path the wizard uses otherwise.
+
+### Outlook, Hotmail, and Live
+
+Personal accounts use OAuth (XOAUTH2), not the account password. IMAP is `outlook.office365.com` port 993 SSL. SMTP is `smtp-mail.outlook.com` port 587 STARTTLS. Work and school mail often uses `smtp.office365.com` on that same port, and `oauth_tenant = "common"` instead of `consumers`.
+
+mailcli prints a code. Open <https://www.microsoft.com/devicelogin> and enter it. The default application id is Thunderbird's public client id `9e5f94bc-e8a4-4e73-b8be-63364c29d753`, which Mozilla publishes for IMAP and SMTP access. A tenant that blocks unknown applications needs an admin to allow that id, or you register a free public client in Microsoft Entra and set `oauth_client_id`: <https://learn.microsoft.com/entra/identity-platform/quickstart-register-app>. Enable public client flows. The scopes are:
+
+- `https://outlook.office.com/IMAP.AccessAsUser.All`
+- `https://outlook.office.com/SMTP.Send`
+- `offline_access`
+
+### Yahoo
+
+IMAP `imap.mail.yahoo.com` port 993 SSL. SMTP `smtp.mail.yahoo.com` port 465 SSL. Turn on two-step verification, then create an app password at <https://login.yahoo.com/account/security/app-passwords>. Yahoo's steps: <https://help.yahoo.com/kb/SLN15241>.
+
+### iCloud
+
+IMAP `imap.mail.me.com` port 993 SSL. SMTP `smtp.mail.me.com` port 587 STARTTLS. Two-factor authentication must be on. Create an app-specific password at <https://account.apple.com> under Sign-In and Security. Apple's steps: <https://support.apple.com/en-us/102654>. The login is the full Apple ID address.
+
+### Proton
+
+Proton Mail does not offer IMAP or SMTP for a normal login. Bridge is the official protocol adapter, and it requires a paid plan. A direct client would have to implement Proton's private web API (SRP, optional two-factor, human verification, and OpenPGP decryption). That API is not a stable public contract, and mailcli does not include it. Use Proton's web app or official apps. If Bridge is already running, choose Custom and use `127.0.0.1`, IMAP port 1143, SMTP port 1025, STARTTLS, and `tls_verify = false`.
+
+### Custom
+
+Any other IMAP and SMTP server. `tls_verify = false` is refused unless the host is `127.0.0.1`, `localhost`, or `::1`. A PEM file in `tls_cert` stays verified.
 
 ## Commands
 
 ```powershell
-mailcli inbox
-mailcli inbox --limit 10 --folder INBOX
-mailcli read 1
-mailcli folders
-mailcli search "invoice"
-mailcli send --to friend@example.com --subject "Hello" --body "Hi from mailcli"
-Get-Content .\note.txt | mailcli send --to friend@example.com --subject "Notes"
-mailcli send --to friend@example.com --subject "Notes" --body-file .\note.txt
+python -m mailcli setup
+python -m mailcli inbox
+python -m mailcli inbox --limit 10
+python -m mailcli read 1
+python -m mailcli folders
+python -m mailcli search "invoice"
+python -m mailcli send --to friend@example.com --subject "Hello" --body "Hi from mailcli"
+Get-Content .\note.txt | python -m mailcli send --to friend@example.com --subject "Notes"
 ```
 
-`inbox` numbers messages newest first. `1` is the newest message in the folder, including mail past `--limit`. `*` in the `U` column means the message is unread. Listing does not mark mail as read. `read` does.
+`inbox` numbers messages newest first. `1` is the newest message in the folder, including mail past `--limit`. `*` in the `U` column means unread. Listing does not mark mail as read. `read` does.
 
-`read` prints From, To, Cc, Date, and Subject, then a plain-text body. Charsets and RFC 2047 encoded words are decoded. An HTML-only message is rendered as text. Attachments are listed with their type and size and are not written out.
+`read` prints the headers and a plain-text body. Charsets and RFC 2047 encoded words are decoded. An HTML-only message is rendered as text. Attachments are listed and are not written out.
 
-`search` asks the server for the text and prints hits with the same numbers `read` uses.
-
-With no subcommand, mailcli opens a prompt loop (no curses, so it works in PowerShell):
+With no subcommand, mailcli opens a prompt loop (no curses):
 
 ```text
 1        open that row
@@ -88,17 +125,9 @@ c        compose (end the body with a line that is only a period)
 q        quit
 ```
 
-Useful overrides: `--config`, `--host`, `--imap-port`, `--smtp-port`, `--user`, `--folder`, `--tls-cert`, `--insecure-localhost`, `--plain`.
-
-## Configuration
-
-TOML and INI both work. Keys are `host`, `imap_port`, `smtp_port`, `user`, `tls_verify`, `tls_cert`, `security` (`starttls` or `ssl`), `folder`, and `timeout`. A `password` key is refused.
-
-Environment variables, when set, override the file: `MAILCLI_HOST`, `MAILCLI_IMAP_PORT`, `MAILCLI_SMTP_PORT`, `MAILCLI_USER`, `MAILCLI_TLS_VERIFY`, `MAILCLI_TLS_CERT`, `MAILCLI_FOLDER`. The password is only `MAILCLI_PASSWORD`. If that variable is unset and stdin is a terminal, mailcli prompts with `getpass` and does not echo the password.
-
 ## Tests
 
-The tests start an in-process IMAP server and SMTP server on `127.0.0.1`, with STARTTLS and a temporary self-signed certificate. No external mail service is used.
+The tests start an in-process IMAP server and SMTP server on `127.0.0.1`. OAuth is tested against a local token endpoint, and the credential store is replaced with a fake. No real mailbox is contacted.
 
 ```powershell
 py -3 -m pip install -e ".\mailcli[dev]"
@@ -108,4 +137,4 @@ py -3 -m pytest
 
 ## Demo
 
-`docs/demo.txt` is a transcript of `inbox`, `read`, `send`, and `inbox` again. The mailbox was GreenMail 2.1.15 with a local account, `demo@localhost`. That GreenMail build speaks implicit TLS rather than STARTTLS, so the demo used `security = ssl` against its IMAPS and SMTPS ports. Proton Mail Bridge stays on the default `starttls` mode, which the pytest suite exercises with a local certificate. `docs/inbox.png` is the same six-message inbox drawn with the optional table. Nothing in the transcript is a real mailbox.
+`docs/demo.txt` is a transcript of `setup` choosing Gmail (no real password is stored in the transcript) and of `inbox` / `read` / `send` against a local GreenMail server configured as a custom account. `docs/inbox.png` shows that setup screen and the inbox.

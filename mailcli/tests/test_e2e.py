@@ -15,6 +15,68 @@ from mailcli.errors import MailcliError
 from mailcli.tlsutil import build_ssl_context
 
 
+def test_xoauth2_inbox_and_send(mail_env, capsys, monkeypatch, tmp_path) -> None:
+    token = "mailbox-access-token"
+    mail_env["imap"].httpd.access_token = token
+    mail_env["smtp"].httpd.access_token = token
+    path = tmp_path / "oauth-config"
+    path.write_text(
+        "\n".join(
+            [
+                'default_account = "live"',
+                "",
+                "[accounts.live]",
+                'provider = "outlook"',
+                f'user = "{mail_env["user"]}"',
+                'imap_host = "127.0.0.1"',
+                f"imap_port = {mail_env['imap_port']}",
+                'imap_security = "starttls"',
+                'smtp_host = "127.0.0.1"',
+                f"smtp_port = {mail_env['smtp_port']}",
+                'smtp_security = "starttls"',
+                'auth = "xoauth2"',
+                'oauth_tenant = "consumers"',
+                "tls_verify = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_get(_account: str, kind: str) -> str | None:
+        if kind == "access":
+            return token
+        if kind == "access_expires":
+            return "9999999999"
+        if kind == "refresh":
+            return "refresh-token"
+        return None
+
+    monkeypatch.setattr("mailcli.oauth_session.get_secret", fake_get)
+    monkeypatch.setattr("mailcli.oauth_session.set_secret", lambda *_args: None)
+    assert main(["--config", str(path), "--plain", "inbox"]) == 0
+    assert "Project kickoff" in capsys.readouterr().out
+    assert (
+        main(
+            [
+                "--config",
+                str(path),
+                "send",
+                "--to",
+                mail_env["user"],
+                "--subject",
+                "OAuth delivery",
+                "--body",
+                "Sent with XOAUTH2.",
+            ]
+        )
+        == 0
+    )
+    assert token not in capsys.readouterr().out
+    assert main(["--config", str(path), "--plain", "search", "XOAUTH2"]) == 0
+    assert "OAuth delivery" in capsys.readouterr().out
+
+
 def test_module_help() -> None:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()

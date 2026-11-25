@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from mailcli.config import Settings
 from mailcli.errors import MailcliError
 from mailcli.mimeutil import ParsedMessage, header_bytes, parse_date, parse_message
+from mailcli.oauth import xoauth2_sasl
 from mailcli.mutf7 import decode as decode_mailbox
 from mailcli.mutf7 import encode as encode_mailbox
 from mailcli.tlsutil import build_ssl_context
@@ -193,7 +194,7 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
     except ConnectionRefusedError as exc:
         raise MailcliError(
             f"Could not connect to IMAP at {settings.host}:{settings.imap_port}. "
-            "If you use Proton Mail Bridge, confirm it is running and listening."
+            "Check the host and port from mailcli setup."
         ) from exc
     except TimeoutError as exc:
         raise MailcliError(
@@ -210,9 +211,9 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
                     f"The IMAP server at {settings.host}:{settings.imap_port} does not offer STARTTLS."
                 )
             imap.starttls(ssl_context=context)
-        typ, data = imap.login(settings.user, settings.password)
+        typ, data = _authenticate(imap, settings)
         if typ != "OK":
-            raise MailcliError("Login failed. Check the account name and MAILCLI_PASSWORD.")
+            raise MailcliError("Login failed. Check the account and its saved sign-in.")
         # ``data`` can echo server text. Drop it so it cannot leak into a traceback we print.
         del data
     except MailcliError:
@@ -222,8 +223,8 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
         _close(imap)
         raise MailcliError(
             f"TLS handshake with IMAP {settings.host}:{settings.imap_port} failed. "
-            "Bridge uses a self-signed certificate: set tls_verify = false for localhost, "
-            "or set tls_cert to the certificate you exported from Bridge. "
+            "For a local server with a self-signed certificate, set tls_verify = false "
+            "only when the host is loopback, or set tls_cert to the PEM file. "
             f"({exc.__class__.__name__})"
         ) from exc
     except imaplib.IMAP4.error as exc:
@@ -233,6 +234,23 @@ def _connect(settings: Settings) -> imaplib.IMAP4:
         _close(imap)
         raise MailcliError(f"The IMAP connection to {settings.host} failed: {exc}") from exc
     return imap
+
+
+def _authenticate(imap: imaplib.IMAP4, settings: Settings):
+    if settings.auth == "xoauth2":
+        if not settings.access_token:
+            raise MailcliError(
+                "This account uses OAuth, but there is no access token. "
+                "Run python -m mailcli setup."
+            )
+        user = settings.user
+        token = settings.access_token
+
+        def mechanism(_challenge: bytes, _user: str = user, _token: str = token) -> str:
+            return xoauth2_sasl(_user, _token)
+
+        return imap.authenticate("XOAUTH2", mechanism)
+    return imap.login(settings.user, settings.password)
 
 
 def _close(imap: imaplib.IMAP4) -> None:

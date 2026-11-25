@@ -48,6 +48,8 @@ def mail_env(tmp_path, monkeypatch):
             "password": PASSWORD,
             "imap_port": imap.port,
             "smtp_port": smtp.port,
+            "imap": imap,
+            "smtp": smtp,
         }
     finally:
         smtp.stop()

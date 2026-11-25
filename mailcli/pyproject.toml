@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mailcli"
-version = "0.1.0"
-description = "Original terminal email client for Proton Mail Bridge"
+version = "0.2.0"
+description = "Original terminal email client"
 readme = "README.md"
 requires-python = ">=3.9"
-keywords = ["email", "imap", "smtp", "protonmail", "cli"]
+keywords = ["email", "imap", "smtp", "cli"]
+dependencies = ["keyring>=24"]
 classifiers = [
     "Environment :: Console",
     "Operating System :: Microsoft :: Windows",

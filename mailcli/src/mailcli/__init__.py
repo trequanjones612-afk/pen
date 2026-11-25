@@ -5,4 +5,4 @@ standard library. It was written for Proton Mail Bridge on Windows, and it
 does not store passwords.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
