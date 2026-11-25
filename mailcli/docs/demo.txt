@@ -1,0 +1,75 @@
+mailcli demo
+============
+
+Server: GreenMail 2.1.15 standalone (local only).
+Account: demo@localhost
+IMAPS 127.0.0.1:3993, SMTPS 127.0.0.1:3465, implicit TLS, self-signed certificate.
+mailcli was started with security = ssl and tls_verify = false.
+tls_verify = false is accepted only because the host is loopback.
+GreenMail 2.1.15 does not advertise STARTTLS. Proton Mail Bridge does;
+the default security = starttls path is covered by the pytest suite.
+
+MAILCLI_PASSWORD was set in the environment for this session and is not printed.
+Six messages were delivered first. "Re: design review" was already marked read,
+so the U column is not a solid block of stars. docs/inbox.png is that first inbox
+with the optional rich table.
+
+$ mailcli inbox
+INBOX  6 messages  newest first
+
+#  U  Date              From                          Subject
+-  -  ----------------  ----------------------------  ---------------------------------
+1  *  2026-11-25 09:14  Maya Chen <maya.chen@exam...  Project kickoff notes
+2  *  2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
+3  *  2026-11-23 11:05  Priya Shah <priya.shah@ex...  Saturday ridge hike
+4  *  2026-11-22 08:27  Sam Okonkwo <sam.okonkwo@...  Build failed on main — auth tests
+5     2026-11-21 15:18  Helena Vogt <helena.vogt@...  Re: design review
+6  *  2026-11-20 07:55  Noah Ibrahim <noah.ibrahi...  Welcome to the lab list
+$ mailcli read 1
+Message 1 of 6  INBOX
+
+From: Maya Chen <maya.chen@example.com>
+To: demo@localhost
+Date: Wed, 25 Nov 2026 09:14:00 +0000
+Subject: Project kickoff notes
+
+Hi team,
+
+The kickoff for the harbor telemetry project is Thursday at 10:00 in the east lab.
+
+Please read the attached agenda before we meet.
+
+Attachments:
+  - agenda.txt (text/plain, 50 B)
+$ mailcli search invoice
+Search "invoice" in INBOX  1 match
+
+#  U  Date              From                          Subject
+-  -  ----------------  ----------------------------  ---------------------------
+2  *  2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
+$ mailcli send --to demo@localhost --subject "Lab door code for Thursday" --body "The east lab door code for the kickoff is 4412. I will bring the spare relay."
+Sent to demo@localhost.
+Subject: Lab door code for Thursday
+$ mailcli inbox
+INBOX  7 messages  newest first
+
+#  U  Date              From                          Subject
+-  -  ----------------  ----------------------------  ---------------------------------
+1  *  2026-11-25 12:56  demo@localhost                Lab door code for Thursday
+2     2026-11-25 09:14  Maya Chen <maya.chen@exam...  Project kickoff notes
+3  *  2026-11-24 16:42  Luis Ortega <luis.ortega@...  Question about invoice 1842
+4  *  2026-11-23 11:05  Priya Shah <priya.shah@ex...  Saturday ridge hike
+5  *  2026-11-22 08:27  Sam Okonkwo <sam.okonkwo@...  Build failed on main — auth tests
+6     2026-11-21 15:18  Helena Vogt <helena.vogt@...  Re: design review
+7  *  2026-11-20 07:55  Noah Ibrahim <noah.ibrahi...  Welcome to the lab list
+$ mailcli read 1
+Message 1 of 7  INBOX
+
+From: demo@localhost
+To: demo@localhost
+Date: Wed, 25 Nov 2026 12:56:39 +0000
+Subject: Lab door code for Thursday
+
+The east lab door code for the kickoff is 4412. I will bring the spare relay.
+
+Attachments: none
